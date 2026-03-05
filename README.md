@@ -5,8 +5,21 @@
 ## 快速开始
 
 ```bash
-pip install openpyxl
+pip install openpyxl flask
+```
 
+### Web UI
+
+```bash
+python app.py
+# 浏览器打开 http://127.0.0.1:6000
+```
+
+上传 Excel → 查看各 Sheet 内容 → 校验映射定义 → 生成 SQL → 下载。
+
+### 命令行
+
+```bash
 # 生成 SQL 并输出到终端
 python generate_sql.py mapping.xlsx "表8.1贷款借据"
 
@@ -89,7 +102,10 @@ Excel 中的笔误（字段名拼写、JOIN 条件别名错误）会被原样传
 ## 项目结构
 
 ```
-├── generate_sql.py     # 主工具：Excel 解析 + SQL 生成
+├── generate_sql.py      # 核心：Excel 解析 + SQL 生成
+├── app.py               # Web UI 服务端 (Flask)
+├── templates/
+│   └── index.html       # Web UI 前端页面
 └── docs/
     ├── mapping-rules.md          # Excel 映射解析与 SQL 生成规则（16 条检查项）
     └── existing-sql-patterns.md  # 已有手写 SQL 的 Bug 模式汇总

@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MapSQL — 映射定义 SQL 生成</title>
+<style>
+:root {
+  --bg: #f5f6fa;
+  --card: #fff;
+  --border: #e0e3eb;
+  --primary: #4361ee;
+  --primary-hover: #3651d4;
+  --danger: #e63946;
+  --warning: #f4a261;
+  --success: #2a9d8f;
+  --text: #2b2d42;
+  --text-muted: #8d99ae;
+  --mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+/* Layout */
+.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 20px;
+}
+header h1 { font-size: 20px; font-weight: 600; }
+header .subtitle { color: var(--text-muted); font-size: 13px; }
+
+/* Upload */
+.upload-area {
+  border: 2px dashed var(--border); border-radius: 12px;
+  padding: 48px; text-align: center; cursor: pointer;
+  transition: border-color .2s, background .2s;
+  background: var(--card);
+}
+.upload-area:hover, .upload-area.dragover {
+  border-color: var(--primary); background: #f0f3ff;
+}
+.upload-area p { color: var(--text-muted); margin-top: 8px; font-size: 14px; }
+.upload-area .icon { font-size: 40px; color: var(--primary); }
+.upload-area input { display: none; }
+.file-info {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; background: var(--card); border-radius: 8px;
+  border: 1px solid var(--border); margin-bottom: 16px; font-size: 14px;
+}
+.file-info .name { font-weight: 600; }
+.file-info .btn-reupload {
+  margin-left: auto; background: none; border: 1px solid var(--border);
+  padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.file-info .btn-reupload:hover { background: var(--bg); }
+
+/* Sheet tabs */
+.sheet-tabs {
+  display: flex; gap: 4px; border-bottom: 2px solid var(--border);
+  margin-bottom: 0; overflow-x: auto;
+}
+.sheet-tab {
+  padding: 10px 20px; cursor: pointer; border: none; background: none;
+  font-size: 14px; color: var(--text-muted); border-bottom: 2px solid transparent;
+  margin-bottom: -2px; white-space: nowrap; transition: all .15s;
+  display: flex; align-items: center; gap: 6px;
+}
+.sheet-tab:hover { color: var(--text); background: #f0f3ff; }
+.sheet-tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.sheet-tab .badge {
+  font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: 600;
+}
+.badge-ok { background: #d4edda; color: var(--success); }
+.badge-err { background: #f8d7da; color: var(--danger); }
+.badge-skip { background: #e9ecef; color: var(--text-muted); }
+
+/* Content panels */
+.sheet-panel { display: none; }
+.sheet-panel.active { display: block; }
+.panel-body {
+  background: var(--card); border: 1px solid var(--border);
+  border-top: none; border-radius: 0 0 8px 8px; overflow: hidden;
+}
+
+/* Validation bar */
+.validation-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  font-size: 13px; flex-wrap: wrap;
+}
+.validation-bar .status {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 6px; font-weight: 600; font-size: 12px;
+}
+.status-valid { background: #d4edda; color: var(--success); }
+.status-invalid { background: #f8d7da; color: var(--danger); }
+.status-loading { background: #e9ecef; color: var(--text-muted); }
+.validation-bar .summary { color: var(--text-muted); font-size: 12px; }
+.validation-bar .actions { margin-left: auto; display: flex; gap: 8px; }
+
+.btn {
+  padding: 6px 16px; border-radius: 6px; font-size: 13px; font-weight: 500;
+  cursor: pointer; border: none; transition: all .15s;
+}
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-primary:disabled { background: #a0aec0; cursor: not-allowed; }
+.btn-outline {
+  background: none; border: 1px solid var(--border); color: var(--text);
+}
+.btn-outline:hover { background: var(--bg); }
+
+/* Messages */
+.messages { padding: 12px 16px; max-height: 200px; overflow-y: auto; border-bottom: 1px solid var(--border); }
+.messages:empty { display: none; }
+.msg {
+  font-size: 12px; font-family: var(--mono); padding: 2px 0;
+  display: flex; gap: 8px; line-height: 1.5;
+}
+.msg-error { color: var(--danger); }
+.msg-warning { color: var(--warning); }
+.msg-note { color: var(--primary); }
+
+/* Excel table */
+.table-wrap {
+  overflow: auto; max-height: 500px;
+}
+.table-wrap table {
+  border-collapse: collapse; font-size: 12px; width: 100%;
+  font-family: var(--mono);
+}
+.table-wrap th, .table-wrap td {
+  border: 1px solid var(--border); padding: 4px 8px;
+  white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+}
+.table-wrap th {
+  background: #f8f9fa; position: sticky; top: 0; z-index: 1;
+  font-weight: 600; color: var(--text-muted); font-size: 11px;
+}
+.table-wrap td:first-child {
+  background: #f8f9fa; color: var(--text-muted); text-align: center;
+  font-size: 11px; position: sticky; left: 0; z-index: 0;
+}
+/* 区域高亮 */
+.row-target { background: #e8f5e9; }
+.row-source { background: #e3f2fd; }
+.row-where { background: #fff3e0; }
+.row-field-header { background: #f3e5f5; }
+
+/* SQL display */
+.sql-panel {
+  display: none; border-top: 1px solid var(--border);
+}
+.sql-panel.active { display: block; }
+.sql-header {
+  display: flex; align-items: center; padding: 8px 16px;
+  background: #1e1e2e; color: #cdd6f4; font-size: 13px;
+}
+.sql-header .title { font-weight: 600; }
+.sql-header .actions { margin-left: auto; display: flex; gap: 8px; }
+.sql-header .btn { font-size: 12px; padding: 4px 10px; }
+.sql-header .btn-outline { border-color: #45475a; color: #cdd6f4; }
+.sql-header .btn-outline:hover { background: #313244; }
+.sql-code {
+  background: #1e1e2e; color: #cdd6f4; padding: 16px;
+  overflow: auto; max-height: 500px; font-family: var(--mono);
+  font-size: 13px; line-height: 1.6; white-space: pre;
+}
+
+/* Notes panel */
+.notes-panel { display: none; }
+.notes-panel.active { display: block; padding: 12px 16px; border-top: 1px solid var(--border); }
+
+/* Loading spinner */
+.spinner {
+  display: inline-block; width: 14px; height: 14px;
+  border: 2px solid var(--border); border-top-color: var(--primary);
+  border-radius: 50%; animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .container { padding: 12px; }
+  .upload-area { padding: 32px 16px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1>MapSQL</h1>
+      <div class="subtitle">YBT 监管报表映射定义 SQL 生成工具</div>
+    </div>
+  </header>
+
+  <!-- Upload area -->
+  <div id="upload-section">
+    <div class="upload-area" id="drop-zone">
+      <div class="icon">&#128196;</div>
+      <p><strong>点击上传</strong>或拖放 Excel 文件到此处</p>
+      <p>.xlsx 格式</p>
+      <input type="file" id="file-input" accept=".xlsx,.xls">
+    </div>
+  </div>
+
+  <!-- File info bar (after upload) -->
+  <div id="file-section" style="display:none">
+    <div class="file-info">
+      <span class="name" id="file-name"></span>
+      <span id="file-meta" style="color:var(--text-muted);font-size:13px"></span>
+      <button class="btn-reupload" onclick="resetUpload()">重新上传</button>
+    </div>
+
+    <!-- Sheet tabs -->
+    <div class="sheet-tabs" id="sheet-tabs"></div>
+
+    <!-- Sheet panels -->
+    <div id="sheet-panels"></div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentFile = null;
+let sheetsData = {};      // sheet_name -> {rows, validated, valid, ...}
+let activeSheet = null;
+
+// ── Upload ──────────────────────────────────────────────
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+async function handleFile(file) {
+  const form = new FormData();
+  form.append('file', file);
+
+  dropZone.innerHTML = '<div class="spinner"></div><p>上传中...</p>';
+
+  try {
+    const res = await fetch(API + '/api/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) { alert(data.error); resetUpload(); return; }
+
+    currentFile = data.filename;
+    sheetsData = {};
+    data.sheets.forEach(s => { sheetsData[s] = { rows: null, validated: false }; });
+
+    document.getElementById('file-name').textContent = data.filename;
+    document.getElementById('file-meta').textContent = `${data.sheets.length} 个 Sheet`;
+    document.getElementById('upload-section').style.display = 'none';
+    document.getElementById('file-section').style.display = 'block';
+
+    renderTabs(data.sheets);
+    if (data.sheets.length) switchSheet(data.sheets[0]);
+  } catch (e) {
+    alert('上传失败: ' + e.message);
+    resetUpload();
+  }
+}
+
+function resetUpload() {
+  document.getElementById('upload-section').style.display = 'block';
+  document.getElementById('file-section').style.display = 'none';
+  dropZone.innerHTML = `
+    <div class="icon">&#128196;</div>
+    <p><strong>点击上传</strong>或拖放 Excel 文件到此处</p>
+    <p>.xlsx 格式</p>
+  `;
+  fileInput.value = '';
+  currentFile = null;
+  sheetsData = {};
+  activeSheet = null;
+}
+
+// ── Tabs & Panels ───────────────────────────────────────
+function renderTabs(sheets) {
+  const tabsEl = document.getElementById('sheet-tabs');
+  const panelsEl = document.getElementById('sheet-panels');
+  tabsEl.innerHTML = '';
+  panelsEl.innerHTML = '';
+
+  sheets.forEach(name => {
+    // Tab
+    const tab = document.createElement('button');
+    tab.className = 'sheet-tab';
+    tab.dataset.sheet = name;
+    tab.innerHTML = `${esc(name)} <span class="badge badge-skip" id="badge-${css(name)}">--</span>`;
+    tab.onclick = () => switchSheet(name);
+    tabsEl.appendChild(tab);
+
+    // Panel
+    const panel = document.createElement('div');
+    panel.className = 'sheet-panel';
+    panel.id = `panel-${css(name)}`;
+    panel.innerHTML = `
+      <div class="panel-body">
+        <div class="validation-bar" id="vbar-${css(name)}">
+          <span class="status status-loading"><span class="spinner"></span> 校验中...</span>
+        </div>
+        <div class="messages" id="msgs-${css(name)}"></div>
+        <div class="table-wrap" id="table-${css(name)}">
+          <div style="padding:40px;text-align:center;color:var(--text-muted)">
+            <span class="spinner"></span> 加载中...
+          </div>
+        </div>
+        <div class="sql-panel" id="sql-panel-${css(name)}">
+          <div class="sql-header">
+            <span class="title">生成的 SQL</span>
+            <div class="actions">
+              <button class="btn btn-outline" onclick="copySQL('${css(name)}')">复制</button>
+              <button class="btn btn-outline" onclick="downloadSQL('${esc(name)}')">下载 .sql</button>
+            </div>
+          </div>
+          <div class="sql-code" id="sql-code-${css(name)}"></div>
+        </div>
+        <div class="notes-panel" id="notes-${css(name)}"></div>
+      </div>
+    `;
+    panelsEl.appendChild(panel);
+  });
+}
+
+async function switchSheet(name) {
+  activeSheet = name;
+
+  // Update tab active state
+  document.querySelectorAll('.sheet-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.sheet === name);
+  });
+  document.querySelectorAll('.sheet-panel').forEach(p => {
+    p.classList.toggle('active', p.id === `panel-${css(name)}`);
+  });
+
+  // Load data if needed
+  const sd = sheetsData[name];
+  if (!sd.rows) {
+    await loadSheetData(name);
+  }
+  if (!sd.validated) {
+    await validateSheet(name);
+  }
+}
+
+async function loadSheetData(name) {
+  try {
+    const res = await fetch(API + `/api/sheet/${encodeURIComponent(name)}`);
+    const data = await res.json();
+    if (data.error) {
+      document.getElementById(`table-${css(name)}`).innerHTML =
+        `<div style="padding:20px;color:var(--danger)">${esc(data.error)}</div>`;
+      return;
+    }
+    sheetsData[name].rows = data.rows;
+    renderTable(name, data.rows);
+  } catch (e) {
+    document.getElementById(`table-${css(name)}`).innerHTML =
+      `<div style="padding:20px;color:var(--danger)">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderTable(name, rows) {
+  if (!rows || !rows.length) {
+    document.getElementById(`table-${css(name)}`).innerHTML =
+      '<div style="padding:20px;color:var(--text-muted)">空 Sheet</div>';
+    return;
+  }
+
+  // Detect zone rows for highlighting
+  const zoneMap = detectZones(rows);
+
+  let html = '<table><thead><tr><th>#</th>';
+  const cols = rows.reduce((max, r) => Math.max(max, r.length), 0);
+  for (let c = 0; c < cols; c++) {
+    html += `<th>${colLabel(c)}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+
+  rows.forEach((row, i) => {
+    const cls = zoneMap[i] || '';
+    html += `<tr class="${cls}">`;
+    html += `<td>${i + 1}</td>`;
+    for (let c = 0; c < cols; c++) {
+      const val = row[c] || '';
+      const display = val.length > 80 ? val.substring(0, 80) + '...' : val;
+      html += `<td title="${esc(val)}">${esc(display)}</td>`;
+    }
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  document.getElementById(`table-${css(name)}`).innerHTML = html;
+}
+
+function detectZones(rows) {
+  const map = {};
+  let zone = '';
+  for (let i = 0; i < rows.length; i++) {
+    const c1 = (rows[i][0] || '').trim();
+    if (c1 === '目标表：') { map[i] = 'row-target'; continue; }
+    if (c1 === '数据源表：') { zone = 'source'; map[i] = 'row-source'; continue; }
+    if (c1 === '数据范围条件：') { zone = 'where'; map[i] = 'row-where'; continue; }
+    if (c1 === '字段映射') { zone = 'field'; map[i] = 'row-field-header'; continue; }
+    if (c1 === '字段中文名') { map[i] = 'row-field-header'; continue; }
+
+    if (zone === 'source' && (rows[i][1] || '').trim()) map[i] = 'row-source';
+    if (zone === 'where' && (rows[i][1] || '').trim()) map[i] = 'row-where';
+  }
+  return map;
+}
+
+async function validateSheet(name) {
+  const badge = document.getElementById(`badge-${css(name)}`);
+  const vbar = document.getElementById(`vbar-${css(name)}`);
+
+  try {
+    const res = await fetch(API + `/api/validate/${encodeURIComponent(name)}`);
+    const data = await res.json();
+
+    sheetsData[name].validated = true;
+    sheetsData[name].valid = data.valid;
+    sheetsData[name].summary = data.summary;
+
+    // Badge
+    if (data.valid) {
+      badge.className = 'badge badge-ok';
+      badge.textContent = '可生成';
+    } else {
+      badge.className = 'badge badge-err';
+      badge.textContent = '不符合';
+    }
+
+    // Validation bar
+    let vhtml = '';
+    if (data.valid) {
+      const s = data.summary;
+      const segs = s.segments.map(seg =>
+        `${seg.name}(${seg.source_tables}表/${seg.where_conditions}条件/${seg.field_mappings}字段)`
+      ).join('、');
+      vhtml = `
+        <span class="status status-valid">&#10003; 符合映射定义</span>
+        <span class="summary">目标表: ${esc(s.target_table)} (${esc(s.target_cn_name)}) | ${segs}</span>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="generateSQL('${esc(name)}')">生成 SQL</button>
+        </div>
+      `;
+    } else {
+      vhtml = `<span class="status status-invalid">&#10007; 不符合映射定义</span>`;
+    }
+    vbar.innerHTML = vhtml;
+
+    // Messages
+    renderMessages(name, data.errors, data.warnings, []);
+
+  } catch (e) {
+    badge.className = 'badge badge-err';
+    badge.textContent = '错误';
+    vbar.innerHTML = `<span class="status status-invalid">校验出错: ${esc(e.message)}</span>`;
+  }
+}
+
+function renderMessages(name, errors, warnings, notes) {
+  const el = document.getElementById(`msgs-${css(name)}`);
+  let html = '';
+  (errors || []).forEach(m => { html += `<div class="msg msg-error">${esc(m)}</div>`; });
+  (warnings || []).forEach(m => { html += `<div class="msg msg-warning">${esc(m)}</div>`; });
+  (notes || []).forEach(m => { html += `<div class="msg msg-note">${esc(m)}</div>`; });
+  el.innerHTML = html;
+}
+
+// ── SQL Generation ──────────────────────────────────────
+async function generateSQL(name) {
+  const vbar = document.getElementById(`vbar-${css(name)}`);
+  const actions = vbar.querySelector('.actions');
+  if (actions) actions.innerHTML = '<span class="spinner"></span> 生成中...';
+
+  try {
+    const res = await fetch(API + `/api/generate/${encodeURIComponent(name)}`);
+    const data = await res.json();
+
+    if (data.error) {
+      alert(data.error);
+      if (actions) actions.innerHTML = `<button class="btn btn-primary" onclick="generateSQL('${esc(name)}')">重试</button>`;
+      return;
+    }
+
+    // Show SQL
+    const sqlPanel = document.getElementById(`sql-panel-${css(name)}`);
+    sqlPanel.classList.add('active');
+    document.getElementById(`sql-code-${css(name)}`).textContent = data.sql;
+
+    // Show notes
+    if (data.notes && data.notes.length) {
+      const notesEl = document.getElementById(`notes-${css(name)}`);
+      notesEl.classList.add('active');
+      let nh = '<div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--warning)">&#9888; 注意事项（可能需要人工补充）</div>';
+      data.notes.forEach(n => { nh += `<div class="msg msg-note">${esc(n)}</div>`; });
+      notesEl.innerHTML = nh;
+    }
+
+    // Update messages
+    renderMessages(name,
+      sheetsData[name].errors || [],
+      data.warnings || [],
+      data.notes || []
+    );
+
+    // Update button
+    if (actions) {
+      actions.innerHTML = `
+        <button class="btn btn-outline" onclick="generateSQL('${esc(name)}')">重新生成</button>
+        <button class="btn btn-primary" onclick="downloadSQL('${esc(name)}')">下载 .sql</button>
+      `;
+    }
+
+  } catch (e) {
+    alert('生成失败: ' + e.message);
+    if (actions) actions.innerHTML = `<button class="btn btn-primary" onclick="generateSQL('${esc(name)}')">重试</button>`;
+  }
+}
+
+function copySQL(nameKey) {
+  const code = document.getElementById(`sql-code-${nameKey}`);
+  if (code) {
+    navigator.clipboard.writeText(code.textContent).then(() => {
+      // Brief visual feedback
+      const btn = event.target;
+      const orig = btn.textContent;
+      btn.textContent = '已复制';
+      setTimeout(() => btn.textContent = orig, 1500);
+    });
+  }
+}
+
+function downloadSQL(name) {
+  window.open(API + `/api/download/${encodeURIComponent(name)}`, '_blank');
+}
+
+// ── Helpers ─────────────────────────────────────────────
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function css(name) {
+  // Generate a safe CSS id from sheet name
+  return btoa(unescape(encodeURIComponent(name))).replace(/[+/=]/g, '_');
+}
+
+function colLabel(idx) {
+  // 0->A, 1->B, ...25->Z, 26->AA
+  let s = '';
+  while (true) {
+    s = String.fromCharCode(65 + (idx % 26)) + s;
+    idx = Math.floor(idx / 26) - 1;
+    if (idx < 0) break;
+  }
+  return s;
+}
+</script>
+</body>
+</html>
