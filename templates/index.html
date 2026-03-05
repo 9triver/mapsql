@@ -429,6 +429,16 @@ async function validateSheet(name) {
   const badge = document.getElementById(`badge-${css(name)}`);
   const vbar = document.getElementById(`vbar-${css(name)}`);
 
+  // 跳过"目录"sheet，不做映射校验
+  if (name === '目录') {
+    sheetsData[name].validated = true;
+    sheetsData[name].valid = false;
+    badge.className = 'badge badge-skip';
+    badge.textContent = '目录';
+    vbar.innerHTML = '<span class="status status-loading" style="background:#e9ecef;color:var(--text-muted)">此 Sheet 为目录页，不含映射定义</span>';
+    return;
+  }
+
   try {
     const res = await fetch(API + `/api/validate/${encodeURIComponent(name)}`);
     const data = await res.json();
