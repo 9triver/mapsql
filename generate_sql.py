@@ -555,15 +555,21 @@ BEGIN
     def _gen_select_expr(self, fm: FieldMapping, seg: MappingSegment) -> str:
         """为一个字段映射生成 SELECT 表达式"""
 
-        # 1. 采集日期 / V_DATE 参数
-        if fm.source_field == 'V_DATE' or (
-            not fm.source_field and not fm.source_table
-        ):
+        # 1. 采集日期 / V_DATE 参数 / 无源字段
+        if fm.source_field == 'V_DATE':
+            return 'V_DATE'
+        if not fm.source_field and not fm.source_table:
             if '采集日期' in fm.target_cn_name or '采集' in fm.target_cn_name:
                 return 'V_DATE'
-            if '备注' in fm.target_cn_name:
-                return "''"
-            return 'V_DATE'
+            # 无源字段且非日期 → 空字符串（不能用 V_DATE）
+            return "''"
+        # 源字段为空但有源表名 → 空字符串
+        if not fm.source_field:
+            self._note(
+                f"字段 {fm.target_en_name}({fm.target_cn_name}) "
+                f"源表为 '{fm.source_table}' 但源字段为空，输出空字符串"
+            )
+            return "''"
 
         # 2. 源字段包含函数表达式 (NVL/IFNULL/COALESCE等)
         if fm.source_field and self._is_function_expr(fm.source_field):
@@ -613,10 +619,15 @@ BEGIN
                 expr = f"COALESCE({expr}, '{default}')"
             return expr
 
-        # 8. 检测可能需要字典码值转换的字段
+        # 8. Y/N 标志位自动转换为 0/1
+        if self._is_yn_flag(fm):
+            return (f"CASE WHEN {alias}.{fm.source_field} = 'Y' "
+                    f"THEN '1' ELSE '0' END")
+
+        # 9. 检测可能需要字典码值转换的字段
         self._check_dict_mismatch(fm)
 
-        # 9. 普通直取
+        # 10. 普通直取
         return f"{alias}.{fm.source_field}"
 
     @staticmethod
@@ -826,6 +837,32 @@ BEGIN
             r'(?<![.\w])([A-Z_][A-Z0-9_]{2,})(?=\s*[=<>!])',
             lambda m: replacer(m), expr
         )
+
+    @staticmethod
+    def _is_yn_flag(fm: FieldMapping) -> bool:
+        """判断字段是否为 Y/N 标志位且需要转为 0/1。
+        识别信号：源字段名含 _FLAG，且满足以下任一条件：
+        1. 目标字典含 0/1 或 是/否
+        2. 目标类型为短 VARCHAR（1-2位），暗示码值字段
+        """
+        if not fm.source_field:
+            return False
+        # 源字段名含 _FLAG
+        if '_FLAG' not in fm.source_field.upper():
+            return False
+        # 条件1: 目标字典暗示 0/1
+        td = fm.target_dict or ''
+        if re.search(r'[01].*[否是]|[是否].*[01]|0[-.:]否|1[-.:]是', td):
+            return True
+        if '0' in td and '1' in td:
+            return True
+        # 条件2: 目标类型为 VARCHAR(1) 或 VARCHAR(2)，字典列为空
+        # _FLAG 字段 + 短 VARCHAR 目标 = 几乎必然是 Y/N→0/1
+        tgt_type = (fm.target_type or '').upper()
+        m = re.search(r'VARCHAR\w*\((\d+)\)', tgt_type)
+        if m and int(m.group(1)) <= 2 and not td:
+            return True
+        return False
 
     def _check_dict_mismatch(self, fm: FieldMapping):
         """检测可能需要字典码值转换的字段，生成警告"""
