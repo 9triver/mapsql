@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MapSQL — 映射定义 SQL 生成</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/tokyo-night-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
 <style>
 :root {
   --bg: #f5f6fa;
@@ -168,10 +172,11 @@ header .subtitle { color: var(--text-muted); font-size: 13px; }
 .sql-header .btn-outline { border-color: #45475a; color: #cdd6f4; }
 .sql-header .btn-outline:hover { background: #313244; }
 .sql-code {
-  background: #1e1e2e; color: #cdd6f4; padding: 16px;
+  margin: 0; padding: 16px;
   overflow: auto; max-height: 500px; font-family: var(--mono);
-  font-size: 13px; line-height: 1.6; white-space: pre;
+  font-size: 13px; line-height: 1.6;
 }
+.sql-code code { font-family: inherit; }
 
 /* Notes panel */
 .notes-panel { display: none; }
@@ -328,7 +333,7 @@ function renderTabs(sheets) {
               <button class="btn btn-outline" onclick="downloadSQL('${esc(name)}')">下载 .sql</button>
             </div>
           </div>
-          <div class="sql-code" id="sql-code-${css(name)}"></div>
+          <pre class="sql-code"><code class="language-sql" id="sql-code-${css(name)}"></code></pre>
         </div>
         <div class="notes-panel" id="notes-${css(name)}"></div>
       </div>
@@ -510,10 +515,12 @@ async function generateSQL(name) {
       return;
     }
 
-    // Show SQL
+    // Show SQL with syntax highlighting
     const sqlPanel = document.getElementById(`sql-panel-${css(name)}`);
     sqlPanel.classList.add('active');
-    document.getElementById(`sql-code-${css(name)}`).textContent = data.sql;
+    const codeEl = document.getElementById(`sql-code-${css(name)}`);
+    codeEl.textContent = data.sql;
+    hljs.highlightElement(codeEl);
 
     // Show notes
     if (data.notes && data.notes.length) {

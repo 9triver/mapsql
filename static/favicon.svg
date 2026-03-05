@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4361ee"/>
+      <stop offset="100%" stop-color="#3a0ca3"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="6" fill="url(#g)"/>
+  <!-- SQL bracket left -->
+  <path d="M7 8 L11 8 L11 10 L9 10 L9 22 L11 22 L11 24 L7 24 Z" fill="#fff" opacity="0.9"/>
+  <!-- SQL bracket right -->
+  <path d="M25 8 L21 8 L21 10 L23 10 L23 22 L21 22 L21 24 L25 24 Z" fill="#fff" opacity="0.9"/>
+  <!-- Arrow: mapping direction -->
+  <path d="M13 16 L19 16 M17 13 L20 16 L17 19" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
