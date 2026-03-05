@@ -1,6 +1,6 @@
 # Excel 映射解析与 SQL 生成规则
 
-基于表1.1、表2.1、表6.1、表7.1、表8.1 五轮实践 + generate_sql.py 工具化总结 + 80 Sheet 全量对照验证。
+基于表1.1、表2.1、表6.1、表7.1、表8.1 五轮实践 + generate_sql.py 工具化总结 + 两个现场共 135 个 Sheet 全量对照验证。
 
 ---
 
@@ -46,8 +46,12 @@
 
 Col7 通常是简单字段名（如 `CUST_ID`），但也可能是：
 
-- 函数表达式：`NVL(T1.CUST_NAME,T2.CUST_NAME)` → 转为 `IFNULL(...)`
+- **NVL/IFNULL 表达式**：`NVL(T1.CUST_NAME,T2.CUST_NAME)` → 转为 `IFNULL(...)`
+- **聚合函数**：`SUM(T1.AMT)`, `MAX(T1.DATE_FIELD)` → 保留函数，注意别名应在括号内（`SUM(T1.X)` 而非 `T1.SUM(X)`），且需生成 GROUP BY
+- **WM_CONCAT**：`WM_CONCAT(T1.CODE)` → Oracle 函数，转为 MySQL 的 `GROUP_CONCAT(T1.CODE)`
 - 需先检测是否为函数表达式，再决定处理路径
+
+**聚合函数规则**：当 SELECT 中出现 `SUM`/`MAX`/`MIN`/`COUNT`/`GROUP_CONCAT` 等聚合函数时，必须为非聚合字段生成 `GROUP BY` 子句。
 
 #### Col6 源表名的特殊格式
 
@@ -145,6 +149,19 @@ CASE WHEN T1.FLAG_FIELD = 'Y' THEN '1' ELSE '0' END,
 CASE WHEN T1.CONDITION = 'xxx' THEN T1.VALUE ELSE '' END,
 ```
 
+#### Oracle → MySQL 语法转换
+
+Excel 中的映射规则和条件可能使用 Oracle 语法，需统一转为 MySQL：
+
+| Oracle 语法 | MySQL 语法 | 说明 |
+|-------------|------------|------|
+| `NVL(a, b)` | `IFNULL(a, b)` | 空值替换 |
+| `TO_CHAR(date, 'YYYY-MM-DD')` | `DATE_FORMAT(date, '%Y-%m-%d')` | 日期格式化 |
+| `TO_DATE('9999-12-31', 'YYYY-MM-DD')` | `STR_TO_DATE('9999-12-31', '%Y-%m-%d')` | 字符串转日期 |
+| `WM_CONCAT(field)` | `GROUP_CONCAT(field)` | 字符串聚合 |
+| `DECODE(x, a, b, c, d, e)` | `CASE WHEN x=a THEN b WHEN x=c THEN d ELSE e END` | 条件映射 |
+| `IF cond THEN val1 ELSE val2` | `CASE WHEN cond THEN val1 ELSE val2 END` | PL/SQL IF → CASE |
+
 #### COALESCE / IFNULL 取值
 
 映射规则写了 NVL 或列出多个备选源字段：
@@ -180,14 +197,22 @@ V_DATE,
 **注意**：无源字段时必须输出 `''`（空字符串）或 `NULL`，绝不能回退为 `V_DATE`。
 `V_DATE` 仅用于"采集日期"等明确标注取日期参数的字段。
 
-### 3. FROM / JOIN 子句
+### 3. Excel 文本清洗
+
+Excel 中的文本可能包含非标准字符，生成 SQL 前需清洗：
+
+- **全角字符转半角**：`（` → `(`、`）` → `)`、`，` → `,`、`；` → `;`
+- **中文伪函数转 SQL**：如条件区写 `月初(V_DATE)` → `DATE_FORMAT(V_DATE, '%Y-%m-01')`
+- **特殊字符清理**：如 `DATE+ID` → `DATE_ID`（Excel 中的 `+` 号干扰）
+
+### 4. FROM / JOIN 子句
 
 - 按 Excel 数据源表区的定义顺序生成
 - 主表放 FROM，其余按定义的关联类型生成 JOIN
 - ON 条件直接使用 Excel 中的关联关系
 - **不要遗漏任何一个定义的表**
 
-### 4. WHERE 子句
+### 5. WHERE 子句
 
 - 按 Excel 数据范围条件区逐行生成
 - 第一个条件用 WHERE，后续用 AND
@@ -219,8 +244,13 @@ V_DATE,
 | 17 | **Y/N 标志位是否需要转 0/1** | 源字段名含 `_FLAG` 且目标字典为 `0/1`，需 `CASE WHEN 'Y' THEN '1' ELSE '0' END` |
 | 18 | **V_DATE 不能作为非日期字段的值** | 只有"采集日期"等明确取日期参数的字段才用 V_DATE，其他无源字段应为 `''` |
 | 19 | **源字段中文名不是 SQL 列名** | Col8 是中文注释（如"本期借方发生额"），不能当列名输出，应根据 Col7 或映射规则确定实际字段 |
+| 20 | **聚合函数语法和 GROUP BY** | `SUM(T1.X)` 不能写成 `T1.SUM(X)`；有聚合函数时必须生成 GROUP BY |
+| 21 | **WM_CONCAT 需转为 GROUP_CONCAT** | Oracle 聚合函数，MySQL 中不存在 |
+| 22 | **全角字符需转半角** | Excel 中 `（），；` 等全角字符不是合法 SQL，需转为半角 |
+| 23 | **Oracle 残留语法需全部转换** | NVL→IFNULL、TO_DATE→STR_TO_DATE、IF...THEN→CASE WHEN、DECODE→CASE |
+| 24 | **别名必须统一为 Tn 格式** | Excel 中 A/B/C 别名需替换为 T1/T2/T3，否则 SQL 中出现未定义别名 |
 
-### 别名提取规则
+### 别名提取与统一规则
 
 Excel 别名列格式多样，提取优先级：
 
@@ -229,6 +259,8 @@ Excel 别名列格式多样，提取优先级：
 3. 第一个 token 为纯英文标识符时取该 token
 4. 纯中文（如 "主表"）→ 返回空，由程序自动分配 `T{n}`
 
+**别名统一**：生成 SQL 时，所有表别名应统一为 `T1`, `T2`, ... 格式。如果 Excel 使用了 A/B/C 等单字母别名，需在字段映射和 JOIN 条件中同步替换为对应的 `Tn` 别名，否则会产生未定义别名错误。
+
 ### Excel 常见笔误模式（需人工判断修正）
 
 - 关联条件中表别名写错（复制粘贴问题，如 T2.DATE_ID 应为 T3.DATE_ID）
@@ -236,12 +268,15 @@ Excel 别名列格式多样，提取优先级：
 - "映射规则"列写了 Oracle 语法（TO_CHAR），需转为 MySQL（DATE_FORMAT）
 - 源字段与目标字段语义不匹配（如 B010047 环境风险分类映射到了统一社会信用代码）
 - **"需转换"标记位置不固定**：可能在 Col10（映射规则）也可能在 Col12（填报说明）
+- ON 条件中特殊字符干扰（如 `DATE+ID` 应为 `DATE_ID`）
+- ON 条件缺少空格导致关键字拼接（如 `GUAR_CONTRACT_IDAND` 应为 `GUAR_CONTRACT_ID AND`）
+- 全角括号混入 SQL 表达式（如 `IN（'01','02'）` 应为 `IN ('01','02')`）
 
 ---
 
 ## 四、自动生成 SQL 与实际存储过程的已知差异
 
-基于两个现场（MySQL 手写 + Oracle 手写）共 75 个存储过程的全量对照。
+基于三个现场（MySQL 手写 60 个 + MySQL 手写 75 个 + Oracle 手写 75 个）共 135 个存储过程的全量对照。
 
 ### 4.1 Excel 映射定义能覆盖的部分（自动生成质量高）
 
@@ -270,5 +305,10 @@ Excel 别名列格式多样，提取优先级：
 | AND 应为 OR/IN | 同一字段多个等值用了 AND（永远为 false） | Bug，修正为 IN |
 | LIKE 缺少通配符 | 如 `LIKE '03'` 应为 `LIKE '03%'` | Bug，补上 % |
 | 表别名错误 | WHERE 中用了未定义的别名 | Bug，修正别名 |
+| INSERT 列重复/错位 | 复制粘贴导致 INSERT 列名重复或映射错位一行 | Bug，如表1.6、2.6、3.4 |
+| 段源表复制粘贴错 | 多段映射中后续段复制第一段后忘改源表 | Bug，如表4.3 |
+| WHERE 括号缺失 | OR 优先级问题导致条件逻辑错误 | Bug，如表3.2 |
+| 函数名拼写错误 | `DATE_FORMATE`、`V_DATE_DATE` 等 | Bug，修正拼写 |
+| JOIN 键用错 | 如 `ACCT_ID` 应为 `AGREE_ID` | Bug，如表7.2 |
 | 注释与实际不符 | 复制模板后忘改功能描述 | 非关键 |
 | 目标表名差异 | 内部表名 `ids_t_X_X_inner` vs 报送表名 `YBT2_XXX` vs Oracle `T_X_X` | 命名规范差异 |

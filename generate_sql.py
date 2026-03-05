@@ -65,6 +65,7 @@ class MappingSegment:
     source_tables: list = field(default_factory=list)   # 数据源表列表
     where_conditions: list = field(default_factory=list) # WHERE 条件列表
     field_mappings: list = field(default_factory=list)   # 字段映射列表
+    alias_map: dict = field(default_factory=dict)  # 旧别名→新别名映射
 
 
 @dataclass
@@ -82,6 +83,11 @@ class SheetMapping:
 class ExcelParser:
     """解析 Excel Sheet 中的映射定义"""
 
+    # 全角→半角映射表
+    _FULLWIDTH_MAP = str.maketrans(
+        '（），；＝＋', '(),;=+',
+    )
+
     def __init__(self, filepath: str, sheet_name: str):
         self.filepath = filepath
         self.sheet_name = sheet_name
@@ -93,6 +99,27 @@ class ExcelParser:
 
     def _error(self, row: int, msg: str):
         self.errors.append(f"[错误] 行{row}: {msg}")
+
+    @classmethod
+    def _clean_sql_text(cls, text: str) -> str:
+        """清洗 Excel 文本中的非标准字符，使其成为合法 SQL 片段。
+        - 全角字符转半角
+        - 修复 ON 条件中的拼接错误（如 IDAND → ID AND）
+        - 清理特殊字符干扰（如 DATE+ID → DATE_ID）
+        """
+        if not text:
+            return text
+        # 全角→半角
+        text = text.translate(cls._FULLWIDTH_MAP)
+        # 修复关键字与标识符粘连：在标识符与SQL关键字之间插入空格
+        # 如 GUAR_CONTRACT_IDAND → GUAR_CONTRACT_ID AND
+        text = re.sub(
+            r'([A-Z0-9_])(AND|OR|ON|LEFT|RIGHT|INNER|JOIN|WHERE)\b',
+            r'\1 \2', text, flags=re.IGNORECASE
+        )
+        # 修复 T3.=DATE_ID → T3.DATE_ID
+        text = re.sub(r'(\w)\.=(\w)', r'\1.\2', text)
+        return text
 
     def _cell(self, row, col) -> str:
         """安全读取单元格值，返回去空格字符串"""
@@ -215,8 +242,12 @@ class ExcelParser:
                 field_start = r
 
         # 解析数据源表
-        source_end = (where_start - 1) if where_start else (field_start - 1 if field_start else end_row)
-        segment.source_tables = self._parse_source_tables(source_table_start, source_end)
+        source_end = (where_start - 1) if where_start else (
+            field_start - 1 if field_start else end_row)
+        segment.source_tables = self._parse_source_tables(
+            source_table_start, source_end)
+        # 提取别名映射（由 _parse_source_tables 生成）
+        segment.alias_map = getattr(self, '_last_alias_map', {})
 
         if not segment.source_tables:
             self._error(start_row, f"段 '{seg_name}' 未找到任何数据源表定义")
@@ -274,8 +305,8 @@ class ExcelParser:
                     self._warn(r, f"无法识别关联类型 '{join_type_raw}'，默认为 LEFT JOIN")
                     join_type = 'LEFT JOIN'
 
-            # 清理关联条件（去掉开头的 ON）
-            join_cond = join_cond_raw
+            # 清理关联条件（去掉开头的 ON，清洗全角/拼写错误）
+            join_cond = self._clean_sql_text(join_cond_raw)
             if join_cond.upper().startswith('ON '):
                 join_cond = join_cond[3:].strip()
 
@@ -291,26 +322,68 @@ class ExcelParser:
         if tables and tables[0].join_type:
             self._warn(start_row + 1, f"第一个表 {tables[0].table_name} 不应有关联类型（应为主表）")
 
+        # 统一别名为 Tn 格式：将单字母别名 (A,B,C,...)
+        # 替换为 T1,T2,T3,...
+        alias_map = {}  # old_alias → new_alias
+        for i, t in enumerate(tables):
+            new_alias = f'T{i + 1}'
+            if t.alias != new_alias and re.match(r'^[A-Z]$', t.alias):
+                alias_map[t.alias] = new_alias
+                t.alias = new_alias
+
+        # 替换 JOIN 条件中的旧别名
+        if alias_map:
+            for t in tables:
+                t.join_condition = self._replace_aliases(
+                    t.join_condition, alias_map
+                )
+
+        # 保存别名映射供后续使用
+        self._last_alias_map = alias_map
         return tables
 
     @staticmethod
+    def _replace_aliases(text: str, alias_map: dict) -> str:
+        """替换 SQL 文本中的表别名引用。
+        如将 A.FIELD → T1.FIELD, B.FIELD → T2.FIELD"""
+        if not text or not alias_map:
+            return text
+        for old, new in alias_map.items():
+            # 替换 A. → T1. （确保 A 是独立的别名，不是单词的一部分）
+            text = re.sub(
+                rf'\b{re.escape(old)}\.',
+                f'{new}.', text
+            )
+        return text
+
+    @staticmethod
     def _extract_alias(alias_raw: str, default_idx: int) -> str:
-        """从别名字段中提取 SQL 别名。如 '主表 A' → 'A', 'T3 法定代表人' → 'T3'"""
+        """从别名字段中提取 SQL 别名。
+        如 '主表 A' → 'A', 'T3 法定代表人' → 'T3',
+           '主表A' → 'A', '关联表B' → 'B'"""
         if not alias_raw:
             return ''
         parts = alias_raw.split()
-        # 查找 T\d+ 模式
+        # 查找 T\d+ 模式（空格分隔或尾部）
         for p in parts:
             if re.match(r'^T\d+$', p, re.IGNORECASE):
                 return p
+        # 在整个字符串中查找 T\d+ 模式（如 "关联表T3"）
+        m = re.search(r'(T\d+)', alias_raw, re.IGNORECASE)
+        if m:
+            return m.group(1)
         # 查找单字母别名 (A, B, etc.)
         for p in parts:
             if re.match(r'^[A-Z]$', p):
                 return p
+        # 查找末尾单字母（如 "主表A", "关联表B"）
+        m = re.search(r'([A-Z])$', alias_raw)
+        if m:
+            return m.group(1)
         # fallback: 如果第一个 token 是纯英文
         if parts and re.match(r'^[a-zA-Z_]\w*$', parts[0]):
             return parts[0]
-        # 如果只有中文（如 "主表"），返回空让调用者分配默认值
+        # 如果只有中文（如 "主表"），返回空
         return ''
 
     def _parse_where_conditions(self, start_row: int, end_row: int) -> list:
@@ -318,16 +391,45 @@ class ExcelParser:
         conditions = []
         for r in range(start_row + 1, end_row + 1):
             operator = self._cell(r, 2).upper()
-            condition = self._cell(r, 3)
+            condition = self._clean_sql_text(self._cell(r, 3))
             description = self._cell(r, 5)
             if not operator or not condition:
                 continue
+            # 转换中文伪函数：月初(X) → DATE_FORMAT(X, '%Y-%m-01')
+            condition = re.sub(
+                r'月初\((\w+)\)',
+                r"DATE_FORMAT(\1, '%Y-%m-01')",
+                condition,
+            )
+            # 转换 Oracle 语法
+            condition = self._convert_oracle_syntax(condition)
             conditions.append(WhereCondition(
                 operator=operator,
                 condition=condition,
                 description=description,
             ))
         return conditions
+
+    @staticmethod
+    def _convert_oracle_syntax(text: str) -> str:
+        """将 Oracle 语法转换为 MySQL 语法（用于 WHERE/JOIN 条件）"""
+        if not text:
+            return text
+        # NVL(a, b) → IFNULL(a, b)
+        text = re.sub(r'\bNVL\s*\(', 'IFNULL(', text, flags=re.IGNORECASE)
+        # TO_DATE('...', '...') → STR_TO_DATE('...', '%Y-%m-%d')
+        text = re.sub(
+            r"\bTO_DATE\s*\(\s*'([^']+)'\s*,\s*'[^']+'\s*\)",
+            r"STR_TO_DATE('\1', '%Y-%m-%d')",
+            text, flags=re.IGNORECASE,
+        )
+        # TO_CHAR(field, 'YYYY-MM-DD') → DATE_FORMAT(field, '%Y-%m-%d')
+        text = re.sub(
+            r"\bTO_CHAR\s*\(([^,]+),\s*'YYYY-MM-DD'\s*\)",
+            r"DATE_FORMAT(\1, '%Y-%m-%d')",
+            text, flags=re.IGNORECASE,
+        )
+        return text
 
     def _parse_field_mappings(self, start_row: int, end_row: int) -> list:
         """解析字段映射区"""
@@ -504,37 +606,67 @@ BEGIN
     DELETE FROM {m.target_table} WHERE {date_field} = V_DATE;
 """
 
-    def _gen_segment(self, seg: MappingSegment, seg_idx: int, total_segs: int) -> str:
+    # 聚合函数模式（用于检测 SELECT 表达式中的聚合）
+    _AGG_FUNCS_RE = re.compile(
+        r'\b(SUM|MAX|MIN|COUNT|AVG|GROUP_CONCAT)\s*\(',
+        re.IGNORECASE
+    )
+
+    def _gen_segment(self, seg: MappingSegment,
+                     seg_idx: int, total_segs: int) -> str:
         """生成一个映射段的 INSERT ... SELECT"""
         lines = []
-        seg_label = seg.segment_name if seg.segment_name != '默认段' else f'第{seg_idx}段'
+        seg_label = (seg.segment_name
+                     if seg.segment_name != '默认段'
+                     else f'第{seg_idx}段')
 
-        lines.append(f"    -- ======================== {seg_label} BEGIN ========================")
+        lines.append(
+            f"    -- ======================== "
+            f"{seg_label} BEGIN "
+            f"========================")
         lines.append(f"    SET V_TAGS = '{seg_idx}';")
         lines.append("")
 
         # INSERT 字段列表
-        valid_fields = [fm for fm in seg.field_mappings if fm.target_en_name]
+        valid_fields = [
+            fm for fm in seg.field_mappings if fm.target_en_name]
 
-        lines.append(f"    INSERT INTO {self.mapping.target_table} (")
+        lines.append(
+            f"    INSERT INTO {self.mapping.target_table} (")
         for i, fm in enumerate(valid_fields):
             comma = ',' if i < len(valid_fields) - 1 else ''
-            lines.append(f"        {fm.target_en_name}{comma}   -- {fm.target_cn_name}")
+            lines.append(
+                f"        {fm.target_en_name}{comma}"
+                f"   -- {fm.target_cn_name}")
         lines.append("    )")
 
-        # SELECT 字段列表
+        # SELECT 字段列表 + 检测聚合函数
         lines.append("    SELECT")
-        for i, fm in enumerate(valid_fields):
+        select_exprs = []
+        has_aggregate = False
+        for fm in valid_fields:
+            expr = self._gen_select_expr(fm, seg)
+            select_exprs.append(expr)
+            if self._AGG_FUNCS_RE.search(expr):
+                has_aggregate = True
+
+        for i, (fm, expr) in enumerate(
+            zip(valid_fields, select_exprs)
+        ):
             comma = ',' if i < len(valid_fields) - 1 else ''
-            select_expr = self._gen_select_expr(fm, seg)
-            lines.append(f"        {select_expr}{comma}   -- {fm.target_cn_name}")
+            lines.append(
+                f"        {expr}{comma}"
+                f"   -- {fm.target_cn_name}")
 
         # FROM / JOIN
         lines.append("")
         main_table = seg.source_tables[0]
-        lines.append(f"    FROM {main_table.table_name} {main_table.alias}")
+        lines.append(
+            f"    FROM {main_table.table_name}"
+            f" {main_table.alias}")
         for t in seg.source_tables[1:]:
-            lines.append(f"    {t.join_type} {t.table_name} {t.alias}")
+            lines.append(
+                f"    {t.join_type} {t.table_name} {t.alias}")
             lines.append(f"        ON {t.join_condition}")
 
         # WHERE
@@ -542,12 +674,29 @@ BEGIN
             for j, wc in enumerate(seg.where_conditions):
                 prefix = "WHERE" if j == 0 else "  AND"
                 lines.append(f"    {prefix} {wc.condition}")
+
+        # GROUP BY（当 SELECT 中有聚合函数时）
+        if has_aggregate:
+            group_cols = []
+            for fm, expr in zip(valid_fields, select_exprs):
+                if not self._AGG_FUNCS_RE.search(expr):
+                    group_cols.append(expr)
+            if group_cols:
+                lines.append("    GROUP BY")
+                for i, col in enumerate(group_cols):
+                    comma = ',' if i < len(group_cols) - 1 else ''
+                    lines.append(f"        {col}{comma}")
+
         lines.append("    ;")
 
         lines.append("")
-        lines.append("    SET V_TOTAL_NUM = V_TOTAL_NUM + ROW_COUNT();")
+        lines.append(
+            "    SET V_TOTAL_NUM = V_TOTAL_NUM + ROW_COUNT();")
         lines.append("    COMMIT;")
-        lines.append(f"    -- ======================== {seg_label} END ==========================")
+        lines.append(
+            f"    -- ======================== "
+            f"{seg_label} END "
+            f"==========================")
         lines.append("")
 
         return '\n'.join(lines)
@@ -571,7 +720,18 @@ BEGIN
             )
             return "''"
 
-        # 2. 源字段包含函数表达式 (NVL/IFNULL/COALESCE等)
+        # 2. 源字段为中文名 → 不是合法列名
+        if fm.source_field and re.search(
+            r'[\u4e00-\u9fff]', fm.source_field
+        ):
+            self._note(
+                f"字段 {fm.target_en_name}({fm.target_cn_name})"
+                f" 源字段为中文 '{fm.source_field}'，"
+                f"不是合法 SQL 列名，输出空字符串"
+            )
+            return "''"
+
+        # 3. 源字段包含函数表达式 (NVL/IFNULL/COALESCE等)
         if fm.source_field and self._is_function_expr(fm.source_field):
             return self._convert_source_field_expr(fm, seg)
 
@@ -632,17 +792,85 @@ BEGIN
 
     @staticmethod
     def _is_function_expr(field: str) -> bool:
-        """判断字段是否包含函数调用（如 NVL(...), COALESCE(...)）"""
-        return bool(re.match(
-            r'^(NVL|IFNULL|COALESCE|CONCAT|SUBSTR|TRIM)\s*\(',
-            field.strip(), re.IGNORECASE
-        ))
+        """判断字段是否包含函数调用。
+        匹配两种模式：
+        1. 直接函数: NVL(...), SUM(...)
+        2. 别名前缀函数: T1.SUM(...), A.MAX(...)
+        """
+        f = field.strip()
+        funcs = (
+            r'NVL|IFNULL|COALESCE|CONCAT|SUBSTR|TRIM'
+            r'|SUM|MAX|MIN|COUNT|AVG'
+            r'|WM_CONCAT|GROUP_CONCAT'
+        )
+        # 模式1: FUNC(...)
+        if re.match(rf'^({funcs})\s*\(', f, re.IGNORECASE):
+            return True
+        # 模式2: ALIAS.FUNC(...) — 如 T1.SUM(...), A.MAX(...)
+        if re.match(
+            rf'^[A-Z]\w*\.({funcs})\s*\(', f, re.IGNORECASE
+        ):
+            return True
+        return False
 
     def _convert_source_field_expr(
         self, fm: FieldMapping, seg: MappingSegment
     ) -> str:
         """将源字段中的函数表达式转为 MySQL 语法"""
         expr = fm.source_field.strip()
+
+        # 清洗全角字符
+        expr = ExcelParser._clean_sql_text(expr)
+
+        # 替换旧别名 (A.X → T1.X)
+        if seg.alias_map:
+            expr = ExcelParser._replace_aliases(
+                expr, seg.alias_map)
+
+        # 修复 ALIAS.FUNC(...) → FUNC(ALIAS....)
+        # 如 T1.SUM(AMT) → SUM(T1.AMT)
+        m = re.match(
+            r'^(\w+)\.(SUM|MAX|MIN|COUNT|AVG|WM_CONCAT'
+            r'|GROUP_CONCAT)\s*\((.+)\)\s*$',
+            expr, re.IGNORECASE
+        )
+        if m:
+            alias_part, func_name, args = (
+                m.group(1), m.group(2), m.group(3))
+            if '.' not in args:
+                args = f'{alias_part}.{args}'
+            func_upper = func_name.upper()
+            if func_upper == 'WM_CONCAT':
+                func_upper = 'GROUP_CONCAT'
+            return f'{func_upper}({args})'
+
+        # 直接聚合函数：给裸列名添加别名前缀
+        # 如 SUM(MWK_AMT) → SUM(T1.MWK_AMT)
+        alias = self._resolve_alias(fm, seg)
+        m = re.match(
+            r'^(SUM|MAX|MIN|COUNT|AVG|GROUP_CONCAT'
+            r'|WM_CONCAT)\s*\((.+)\)\s*$',
+            expr, re.IGNORECASE
+        )
+        if m:
+            func_name, args = m.group(1), m.group(2)
+            func_upper = func_name.upper()
+            if func_upper == 'WM_CONCAT':
+                func_upper = 'GROUP_CONCAT'
+            # 给裸列名添加别名
+            args = re.sub(
+                r'\b([A-Z_]\w+)\b',
+                lambda mm: (
+                    mm.group(0)
+                    if '.' in mm.group(0)
+                    or mm.group(0).upper() in (
+                        'SEPARATOR', 'DISTINCT',
+                        'ASC', 'DESC')
+                    else f'{alias}.{mm.group(0)}'
+                ),
+                args
+            )
+            return f'{func_upper}({args})'
 
         # NVL(...) → IFNULL(...)
         m = re.match(
@@ -651,6 +879,14 @@ BEGIN
         )
         if m:
             return f"IFNULL({m.group(1)}, {m.group(2)})"
+
+        # WM_CONCAT → GROUP_CONCAT
+        m = re.match(
+            r'WM_CONCAT\s*\((.+)\)\s*$',
+            expr, re.IGNORECASE
+        )
+        if m:
+            return f"GROUP_CONCAT({m.group(1)})"
 
         # COALESCE 直接返回
         if expr.upper().startswith('COALESCE'):
@@ -731,12 +967,21 @@ BEGIN
             f"THEN {alias}.{fm.source_field} ELSE '' END"
         )
 
-    def _convert_mapping_rule(self, fm: FieldMapping, seg: MappingSegment) -> str:
+    def _convert_mapping_rule(
+        self, fm: FieldMapping, seg: MappingSegment
+    ) -> str:
         """将 Excel 中的映射规则转为 MySQL 表达式"""
         rule = fm.mapping_rule
 
+        # 清洗全角字符
+        rule = ExcelParser._clean_sql_text(rule)
+        # 通用 Oracle 语法转换
+        rule = ExcelParser._convert_oracle_syntax(rule)
+
         # Oracle TO_CHAR → MySQL DATE_FORMAT
-        match = re.match(r"TO_CHAR\((\w+\.\w+)\s*,\s*'YYYY-MM-DD'\)", rule, re.IGNORECASE)
+        match = re.match(
+            r"DATE_FORMAT\((\w+\.\w+)\s*,\s*'%Y-%m-%d'\)",
+            rule, re.IGNORECASE)
         if match:
             field_ref = match.group(1)
             default = self._get_date_default(fm)
