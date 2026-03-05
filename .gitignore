@@ -1,0 +1,15 @@
+# Data files
+一表通-数据集市到报送层_20260304/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
