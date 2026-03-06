@@ -138,7 +138,7 @@ def parse_sql_structure(sql_text: str) -> list[SegmentInfo]:
     segments = []
 
     for m in re.finditer(
-        r'insert\s+into\s+\w+\s*\(([^)]+)\)\s*\n?\s*select\s+(.+?)\n\s*from\s+(\S+)',
+        r'insert\s+into\s+[\w.]+\s*\(([^)]+)\)\s*\n?\s*select\s+(.+?)\n\s*from\s+(\S+)',
         sql_text, re.DOTALL | re.IGNORECASE,
     ):
         seg = SegmentInfo()
@@ -303,12 +303,19 @@ def main():
     results = []
 
     for sheet_name in sheets:
-        m = re.match(r'表(\d+\.\d+)', sheet_name)
+        m = re.match(r'表(\d+)\.(\d+)', sheet_name)
         if not m:
             continue
-        num = m.group(1)
-        ref_file = os.path.join(sql_dir, f'{num}.txt')
-        if not os.path.exists(ref_file):
+        major, minor = m.group(1), m.group(2)
+        num = f'{major}.{minor}'
+        # 支持多种命名: 1.1.txt, PROC_T_1_1.sql, T_1_1.sql
+        candidates = [
+            os.path.join(sql_dir, f'{num}.txt'),
+            os.path.join(sql_dir, f'PROC_T_{major}_{minor}.sql'),
+            os.path.join(sql_dir, f'T_{major}_{minor}.sql'),
+        ]
+        ref_file = next((f for f in candidates if os.path.exists(f)), None)
+        if not ref_file:
             continue
 
         total += 1
