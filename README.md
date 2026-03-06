@@ -21,36 +21,40 @@ python app.py
 
 ```bash
 # 生成 SQL 并输出到终端
-python generate_sql.py mapping.xlsx "表8.1贷款借据"
+python3 -m mapsql.cli mapping.xlsx "表8.1贷款借据"
+
+# 使用手写 SQL 中的 CASE 映射字典
+python3 -m mapsql.cli mapping.xlsx "表8.1贷款借据" --dict-from ./手写SQL目录
 
 # 生成 SQL 并写入文件，显示详细信息
-python generate_sql.py mapping.xlsx "表8.1贷款借据" -o output.sql -v
+python3 -m mapsql.cli mapping.xlsx "表8.1贷款借据" -o output.sql -v
+
+# 对照测试：生成 SQL vs 手写 SQL
+python3 -m mapsql.compare mapping.xlsx ./手写SQL目录
 ```
 
-## 设计概览
-
-### 处理流程
+## 架构
 
 ```
-Excel Sheet → ExcelParser → SheetMapping → SQLGenerator → SQL 存储过程
+Excel Sheet → ExcelParser → SheetMapping → FieldResolver (Rule Pipeline) → SQLWriter → SQL 存储过程
+                                                  ↑
+                                            CaseDictExtractor (dict-from)
 ```
 
-**ExcelParser** 解析 Excel 的四个区域：
+### 模块说明
 
-| 区域 | 标识 | 内容 |
-|------|------|------|
-| 表头区 | `目标表：` | 目标表英文名、中文名 |
-| 数据源表区 | `数据源表：` | 主表/关联表、别名、JOIN 类型和条件 |
-| 数据范围条件区 | `数据范围条件：` | WHERE/AND 条件 |
-| 字段映射区 | `字段映射` → `字段中文名` | 逐字段的源→目标映射规则 |
-
-支持多段映射（如 A段/B段），每段独立的源表、条件和字段定义会生成独立的 INSERT...SELECT 语句。
-
-**SQLGenerator** 根据解析结果生成完整的 MySQL 存储过程，包含：
-- 变量声明和异常处理模板
-- DELETE 当期数据
-- 每段一个 INSERT INTO ... SELECT ... FROM ... WHERE
-- 行数累计和日志记录
+| 模块 | 职责 |
+|------|------|
+| `mapsql/models.py` | 数据结构定义（SourceTable, FieldMapping, MappingSegment, SheetMapping） |
+| `mapsql/config.py` | 现场配置（GeneratorConfig: schema, dialect, proc_name 等） |
+| `mapsql/excel_parser.py` | Excel 解析：表头、数据源表、WHERE 条件、字段映射四个区域 |
+| `mapsql/text_cleaner.py` | 文本清洗：全角转半角、Oracle→MySQL 语法转换、别名替换 |
+| `mapsql/field_resolver.py` | 字段解析：9 条规则管道，将每个字段映射转为 SELECT 表达式 |
+| `mapsql/case_dict.py` | CASE 字典：从手写 SQL 文件中提取 CASE WHEN 映射 |
+| `mapsql/sql_writer.py` | SQL 组装：存储过程模板 + 各段 INSERT...SELECT + 生成摘要 |
+| `mapsql/compare.py` | 对照测试：生成 SQL 与手写 SQL 的语义结构比较 |
+| `mapsql/cli.py` | 命令行入口 |
+| `app.py` | Web UI 服务端（Flask） |
 
 ### 数据结构
 
@@ -60,53 +64,143 @@ SheetMapping
 ├── target_cn_name      # 目标表中文名
 └── segments[]          # 映射段列表
     └── MappingSegment
+        ├── segment_name         # 段名称（A段/B段/默认段）
         ├── source_tables[]      # SourceTable: 表名、别名、JOIN 类型/条件
         ├── where_conditions[]   # WhereCondition: 操作符、条件表达式
-        └── field_mappings[]     # FieldMapping: 源/目标字段、类型、映射规则
+        ├── field_mappings[]     # FieldMapping: 源/目标字段、类型、映射规则
+        └── alias_map            # 别名替换映射（A→T1, B→T2）
 ```
 
-### 字段映射转换逻辑
+## 字段映射规则管道
 
-按优先级从高到低处理每个字段：
+每个目标字段按优先级依次匹配以下 9 条规则，**命中即停**：
 
-| 优先级 | 条件 | 生成逻辑 |
-|--------|------|----------|
-| 1 | 无源表/源字段，含"采集日期" | `V_DATE` |
-| 2 | 源字段 (Col7) 含函数表达式 | `NVL(...)` → `IFNULL(...)` |
-| 3 | 映射规则 (Col10) 非空 | IF→CASE WHEN, TO_CHAR→DATE_FORMAT, NVL→IFNULL |
-| 4 | 多源字段标记 (`__MULTI_SRC__`) | `CASE WHEN field1 > 0 OR field2 > 0 ...` |
-| 5 | 填报说明 (Col12) 含"当...时" | 条件 CASE WHEN（如渠道类型判断） |
-| 6 | 源为 DATE，目标为 VARCHAR | `DATE_FORMAT(..., '%Y-%m-%d')` |
-| 7 | 以上均不满足 | `别名.源字段` 直取 |
+| 优先级 | 规则 | 匹配条件 | 生成结果 |
+|--------|------|----------|----------|
+| 1 | **采集日期** | 源字段为 `V_DATE`，或目标含"采集日期" | `V_DATE` |
+| 2 | **Col10 CASE** | 映射规则 (Col10) 以 `CASE` 开头 | 直接使用，修正 `IS`→`=`、补别名、Oracle→MySQL |
+| 3 | **函数表达式** | 源字段 (Col7) 含 `NVL()`/`SUM()`/`MAX()` 等 | 函数转换 + 别名补全 |
+| 4 | **映射规则** | Col10 非空（非 CASE） | `IF→CASE WHEN`，`TO_CHAR→DATE_FORMAT`，`DECODE→CASE`，`NVL→IFNULL`，`\|\|→CONCAT`；中文说明/子查询→TODO |
+| 5 | **日期转换** | 源类型含 DATE，目标类型为 VARCHAR | `DATE_FORMAT(T1.field, '%Y-%m-%d')` |
+| 6 | **FLAG 标志** | 源字段含 `_FLAG`，目标字典为 0/1 | `CASE WHEN T1.field='Y' THEN '1' ELSE '0' END` |
+| 7 | **码值映射** | 源/目标类型宽度不匹配（如 VARCHAR(6)→VARCHAR(2)） | 三级策略（见下文） |
+| 8 | **直取字段** | 有源字段，无上述特殊情况 | `T1.field` |
+| 9 | **空值兜底** | 以上均不匹配 | `''` |
 
-### 自动检测与警告
+## CASE 字典三级策略
 
-工具会在 stderr 输出 `[注意]` 提示以下需人工关注的情况：
+处理源/目标码值不同需要 CASE 映射的场景（规则 7），按优先级递进：
 
-- **"需转换"标记**：映射规则或填报说明标注了"需转换"，但源系统码值未知
-- **类型宽度不匹配**：如 VARCHAR2(6)→VARCHAR2(2) 且业务口径含码值列表，可能需要 CASE 转换
-- **INTEGER→VARCHAR**：数值到字符串的隐式转换
-- **多源表引用**：源表名含逗号，需人工补充取值逻辑
-- **无法识别的映射规则**：在 SQL 中标记 `/* TODO: ... */`
+**级别 1：dict-from 历史提取**
+从手写 SQL 文件提取已有 CASE 映射，按 `(目标字段, 源字段)` 匹配。命中则直接使用完整 CASE 表达式。
 
-## 工具的局限
+```bash
+python3 -m mapsql.cli mapping.xlsx "表8.1贷款借据" --dict-from ./手写SQL目录
+```
 
-以下场景需要人工补充 CASE 转换逻辑（因为 Excel 中缺少源系统码值信息）：
+**级别 2：Col4/Col13 码值骨架**
+从 Excel 的字典枚举（Col4）或填报说明（Col13）提取目标码值，生成 CASE 骨架，WHEN 条件留空供用户填写：
 
-- 源/目标码值顺序不同（如贷款状态：源 04=核销 → 目标 02=核销）
-- 源码值为复合编码需映射为简码（如机构类型 A030104 → 07）
-- 取值依赖多表条件判断（如客户类型需区分个人/对公）
+```sql
+CASE T1.SOURCE_FIELD
+    WHEN '' THEN '01'  -- 央行
+    WHEN '' THEN '02'  -- 政策性银行
+    WHEN '' THEN '03'  -- 大型商业银行
+    ELSE ''
+END  /* TODO: 请根据源系统字典填写 WHEN 条件值 */
+```
 
-Excel 中的笔误（字段名拼写、JOIN 条件别名错误）会被原样传递到生成的 SQL 中。
+**级别 3：直取 + TODO 警告**
+无码值信息时直取源字段，附加 TODO 注释提醒人工补充。
+
+## Oracle→MySQL 语法转换
+
+文本清洗管道自动处理 Excel 中的 Oracle 语法：
+
+| Oracle | MySQL |
+|--------|-------|
+| `NVL(a, b)` | `IFNULL(a, b)` |
+| `TO_CHAR(d, 'YYYY-MM-DD')` | `DATE_FORMAT(d, '%Y-%m-%d')` |
+| `TO_DATE('...', 'YYYY-MM-DD')` | `STR_TO_DATE('...', '%Y-%m-%d')` |
+| `DECODE(x, a, b, c, d, e)` | `CASE WHEN x=a THEN b WHEN x=c THEN d ELSE e END` |
+| `a \|\| b` | `CONCAT(a, b)` |
+| `SYSDATE` / `SYSTIMESTAMP` | `NOW()` |
+| `WM_CONCAT(f)` | `GROUP_CONCAT(f)` |
+| `IF c THEN v1 ELSE v2 END IF` | `CASE WHEN c THEN v1 ELSE v2 END` |
+
+全角字符（`（），；`）自动转半角，关键字粘连（`IDAND`→`ID AND`）自动修复。
+
+## TODO/REVIEW 注释
+
+生成的 SQL 中，不确定的部分用统一格式标注：
+
+| 级别 | 格式 | 含义 |
+|------|------|------|
+| **TODO** | `/* TODO: 描述 */` | 必须人工补充，否则 SQL 不完整 |
+| **REVIEW** | `/* REVIEW: 描述 */` | 建议人工确认，可能已正确 |
+
+常见 TODO 场景：码值 CASE 骨架（WHEN 留空）、类型宽度不匹配、映射规则为文字说明、多源表取值。
+
+## 生成摘要
+
+每个存储过程末尾自动生成统计摘要：
+
+```sql
+/* ================================================================
+   自动生成摘要
+   --------------------------------------------------------------
+   目标表: YBT2_JGL_JGXX (表1.1机构信息)
+   段数: 1
+   总字段: 23
+   --------------------------------------------------------------
+   自动映射: 20 个字段 (86%)
+     - 直取字段: 13
+     - 日期转换: 1
+     - FLAG转换: 5
+     - V_DATE: 1
+   需人工确认: 3 个字段 (13%)
+     - 码值CASE骨架(WHEN留空): 3  -> 搜索 "TODO: 请根据源系统字典"
+   ================================================================ */
+```
+
+## 现场配置
+
+通过 `GeneratorConfig` 参数化不同现场的差异：
+
+```python
+from mapsql.config import GeneratorConfig
+
+config = GeneratorConfig(
+    dialect='mysql',
+    source_schema='dwdevdb_model',     # 源表 schema 前缀
+    target_schema='dwdevdb_ids',       # 目标表 schema 前缀
+    proc_schema='dwdevdb_ids',         # 存储过程 schema
+    vdate_expr='I_DATE',               # V_DATE 初始化表达式
+    log_call='dwdevdb_model.PMODEL_JOB_LOG',  # 日志调用
+    definer='`dwdev`@`%`',            # MySQL DEFINER
+)
+```
 
 ## 项目结构
 
 ```
-├── generate_sql.py      # 核心：Excel 解析 + SQL 生成
-├── app.py               # Web UI 服务端 (Flask)
-├── templates/
-│   └── index.html       # Web UI 前端页面
-└── docs/
-    ├── mapping-rules.md          # Excel 映射解析与 SQL 生成规则（16 条检查项）
-    └── existing-sql-patterns.md  # 已有手写 SQL 的 Bug 模式汇总
+mapsql/
+├── __init__.py          # 包入口，re-export 关键类
+├── models.py            # 数据结构定义
+├── config.py            # GeneratorConfig 现场配置
+├── excel_parser.py      # Excel 解析
+├── text_cleaner.py      # 文本清洗 + Oracle→MySQL 转换
+├── field_resolver.py    # 规则管道（9 条规则）
+├── case_dict.py         # CASE 映射字典提取
+├── sql_writer.py        # SQL 存储过程组装
+├── compare.py           # 对照测试
+└── cli.py               # 命令行入口
+app.py                   # Web UI (Flask)
+templates/
+└── index.html           # Web UI 前端
+docs/
+├── v2-generation-rules.md    # 生成规则详细文档
+├── v2-design.md              # 模块架构设计文档
+├── mapping-rules.md          # v1 映射规则参考
+└── existing-sql-patterns.md  # 已有 SQL Bug 模式汇总
 ```

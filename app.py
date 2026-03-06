@@ -10,7 +10,8 @@ import tempfile
 
 from flask import Flask, jsonify, request, render_template, send_file
 
-from generate_sql import ExcelParser, SQLGenerator
+from mapsql.excel_parser import ExcelParser
+from mapsql.sql_writer import SQLWriter as SQLGenerator
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
