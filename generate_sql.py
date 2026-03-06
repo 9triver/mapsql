@@ -257,6 +257,23 @@ class ExcelParser:
         if where_start:
             where_end = (field_start - 1) if field_start else end_row
             segment.where_conditions = self._parse_where_conditions(where_start, where_end)
+            # 应用别名映射到 WHERE 条件
+            if segment.alias_map:
+                for wc in segment.where_conditions:
+                    wc.condition = self._replace_aliases(
+                        wc.condition, segment.alias_map)
+            # 对关联类型为"无"的表，将 WHERE 中的别名引用展开为 "表名 别名"
+            for t in segment.source_tables:
+                if t.join_type == '' and t != segment.source_tables[0]:
+                    wc_alias = t.alias
+                    for wc in segment.where_conditions:
+                        # From T2 → From table_name T2
+                        wc.condition = re.sub(
+                            rf'\bFrom\s+{re.escape(wc_alias)}\b',
+                            f'From {t.table_name} {wc_alias}',
+                            wc.condition,
+                            flags=re.IGNORECASE,
+                        )
 
         # 解析字段映射
         if field_start:
@@ -295,7 +312,9 @@ class ExcelParser:
             join_type = ''
             if join_type_raw:
                 jt = join_type_raw.upper().strip()
-                if 'INNER' in jt:
+                if jt == '无' or jt == 'NONE':
+                    join_type = ''  # 不生成 JOIN，仅在 WHERE 子查询中引用
+                elif 'INNER' in jt:
                     join_type = 'INNER JOIN'
                 elif 'LEFT' in jt:
                     join_type = 'LEFT JOIN'
@@ -345,14 +364,19 @@ class ExcelParser:
     @staticmethod
     def _replace_aliases(text: str, alias_map: dict) -> str:
         """替换 SQL 文本中的表别名引用。
-        如将 A.FIELD → T1.FIELD, B.FIELD → T2.FIELD"""
+        如将 A.FIELD → T1.FIELD, From C Where → From T2 Where"""
         if not text or not alias_map:
             return text
         for old, new in alias_map.items():
-            # 替换 A. → T1. （确保 A 是独立的别名，不是单词的一部分）
+            # 替换 A.FIELD → T1.FIELD
             text = re.sub(
                 rf'\b{re.escape(old)}\.',
                 f'{new}.', text
+            )
+            # 替换独立别名引用（如 From C Where → From T2 Where）
+            text = re.sub(
+                rf'\b{re.escape(old)}\b(?!\.)',
+                new, text
             )
         return text
 
@@ -509,14 +533,141 @@ class ExcelParser:
 
 
 # ============================================================
+# CASE 字典提取器
+# ============================================================
+
+class CaseDictExtractor:
+    """从手写 SQL 文件中提取 CASE WHEN 映射字典。
+
+    字典键为 (目标字段, 源字段)，值为 CASE 表达式字符串。
+    同一源字段在不同目标字段中可能有不同映射（如 CUST_TYPE_CODE）。
+    """
+
+    def __init__(self):
+        self.case_dict: dict[tuple[str, str], str] = {}
+
+    @staticmethod
+    def _parse_select_exprs(select_text: str) -> list[str]:
+        """按顶层逗号拆分 SELECT 表达式，正确处理 CASE/括号嵌套。"""
+        # 先去除行尾 SQL 注释（保留字符串内的 --）
+        lines = select_text.split('\n')
+        clean_lines = []
+        for line in lines:
+            # 简单处理：去掉 -- 后的内容（不在引号内）
+            in_str = False
+            result = []
+            i = 0
+            while i < len(line):
+                if line[i] == "'" and not in_str:
+                    in_str = True
+                elif line[i] == "'" and in_str:
+                    in_str = False
+                elif line[i:i+2] == '--' and not in_str:
+                    break
+                result.append(line[i])
+                i += 1
+            clean_lines.append(''.join(result).rstrip())
+        cleaned = '\n'.join(clean_lines)
+
+        tokens = re.findall(r"'[^']*'|\b\w+\b|[(),]", cleaned)
+        exprs: list[str] = []
+        paren_depth = 0
+        case_depth = 0
+        last_split = 0
+        pos = 0
+
+        for token in tokens:
+            tup = token.upper()
+            if tup == '(':
+                paren_depth += 1
+            elif tup == ')':
+                paren_depth -= 1
+            elif tup == 'CASE':
+                case_depth += 1
+            elif tup == 'END':
+                case_depth = max(0, case_depth - 1)
+            elif token == ',' and paren_depth <= 0 and case_depth <= 0:
+                idx = cleaned.find(',', pos)
+                if idx >= 0:
+                    expr = cleaned[last_split:idx].strip()
+                    if expr:
+                        exprs.append(expr)
+                    last_split = idx + 1
+                    pos = idx + 1
+                    continue
+
+            idx = cleaned.find(token, pos)
+            if idx >= 0:
+                pos = idx + len(token)
+
+        last = cleaned[last_split:].strip()
+        if last:
+            exprs.append(last)
+        return exprs
+
+    def load_from_directory(self, dir_path: str) -> int:
+        """从目录中的所有 .txt/.sql 文件提取 CASE 映射。返回提取到的条目数。"""
+        import os
+        count = 0
+        for fname in sorted(os.listdir(dir_path)):
+            if not fname.endswith(('.txt', '.sql')):
+                continue
+            filepath = os.path.join(dir_path, fname)
+            count += self._extract_from_file(filepath)
+        return count
+
+    def _extract_from_file(self, filepath: str) -> int:
+        """从单个 SQL 文件中提取 CASE 映射。"""
+        with open(filepath, encoding='utf-8') as f:
+            text = f.read()
+
+        count = 0
+        # 匹配 INSERT INTO table (cols) \n select ... \nfrom
+        # 使用 \nfrom (行首 from) 避免匹配 CASE 表达式内的 from
+        for m in re.finditer(
+            r'insert\s+into\s+\w+\s*\(([^)]+)\)\s*\n?\s*select\s+(.+?)\n\s*from\s',
+            text, re.DOTALL | re.IGNORECASE,
+        ):
+            cols = [c.strip() for c in m.group(1).split(',')]
+            exprs = self._parse_select_exprs(m.group(2))
+
+            for j in range(min(len(cols), len(exprs))):
+                expr = exprs[j].strip()
+                # 去除行尾注释
+                expr_clean = re.sub(
+                    r'\s*--[^\n]*$', '', expr, flags=re.MULTILINE
+                ).strip()
+                if not re.match(r'CASE\b', expr_clean, re.IGNORECASE):
+                    continue
+                col = cols[j].strip()
+                # 提取源字段：优先匹配 T\d+.FIELD 模式
+                src_m = re.search(r'\bT\d+\.(\w+)', expr_clean)
+                if not src_m:
+                    continue
+                src_field = src_m.group(1)
+                # 规范化：去除表别名前缀（CASE 中可能是 T1/T4 等不同别名）
+                key = (col, src_field)
+                if key not in self.case_dict:
+                    self.case_dict[key] = expr_clean
+                    count += 1
+        return count
+
+    def lookup(self, target_field: str, source_field: str) -> Optional[str]:
+        """查找 CASE 映射。返回 CASE 表达式或 None。"""
+        return self.case_dict.get((target_field, source_field))
+
+
+# ============================================================
 # SQL 生成器
 # ============================================================
 
 class SQLGenerator:
     """根据解析结果生成 MySQL 存储过程"""
 
-    def __init__(self, mapping: SheetMapping):
+    def __init__(self, mapping: SheetMapping,
+                 case_dict: Optional[CaseDictExtractor] = None):
         self.mapping = mapping
+        self.case_dict = case_dict
         self.notes: list[str] = []  # 生成过程中的注意事项
 
     def _note(self, msg: str):
@@ -665,6 +816,8 @@ BEGIN
             f"    FROM {main_table.table_name}"
             f" {main_table.alias}")
         for t in seg.source_tables[1:]:
+            if not t.join_type:
+                continue  # 关联类型为"无"，不生成 JOIN（仅在 WHERE 子查询中引用）
             lines.append(
                 f"    {t.join_type} {t.table_name} {t.alias}")
             lines.append(f"        ON {t.join_condition}")
@@ -680,6 +833,12 @@ BEGIN
             group_cols = []
             for fm, expr in zip(valid_fields, select_exprs):
                 if not self._AGG_FUNCS_RE.search(expr):
+                    # 排除常量表达式（空字符串、V_DATE、数字等）
+                    stripped = expr.strip()
+                    if (stripped.startswith("'") or
+                            stripped == 'V_DATE' or
+                            stripped.replace('.', '').isdigit()):
+                        continue
                     group_cols.append(expr)
             if group_cols:
                 lines.append("    GROUP BY")
@@ -754,6 +913,10 @@ BEGIN
         if fm.fill_instruction and fm.fill_instruction.strip() in (
             '转换', '需转换'
         ):
+            # 优先从字典查找 CASE 映射
+            dict_expr = self._lookup_case_dict(fm, seg)
+            if dict_expr:
+                return dict_expr
             self._note(
                 f"字段 {fm.target_en_name}({fm.target_cn_name}) "
                 f"标注'需转换'，源字典值未知，暂直取"
@@ -784,7 +947,10 @@ BEGIN
             return (f"CASE WHEN {alias}.{fm.source_field} = 'Y' "
                     f"THEN '1' ELSE '0' END")
 
-        # 9. 检测可能需要字典码值转换的字段
+        # 9. 检测可能需要字典码值转换的字段 — 优先从字典查找
+        dict_expr = self._lookup_case_dict(fm, seg)
+        if dict_expr:
+            return dict_expr
         self._check_dict_mismatch(fm)
 
         # 10. 普通直取
@@ -1021,9 +1187,25 @@ BEGIN
 
         # 需转换标记
         if rule.strip() in ('转换', '需转换'):
+            # 优先从字典查找 CASE 映射
+            dict_expr = self._lookup_case_dict(fm, seg)
+            if dict_expr:
+                return dict_expr
             self._note(f"字段 {fm.target_en_name}({fm.target_cn_name}) 标注'需转换'，源字典值未知，暂直取")
             alias = self._resolve_alias(fm, seg)
             return f"{alias}.{fm.source_field}"
+
+        # CASE WHEN ... END 表达式 — 已是合法 SQL，直接使用
+        if re.match(r'CASE\b', rule, re.IGNORECASE) and re.search(r'\bEND\b', rule, re.IGNORECASE):
+            # 修正 Oracle IS 'val' → = 'val'
+            expr = re.sub(r"\bIS\s+'", "= '", rule, flags=re.IGNORECASE)
+            # 给裸列名添加表别名
+            alias = self._resolve_alias(fm, seg)
+            expr = self._qualify_columns(expr, alias)
+            # 替换别名映射
+            if seg.alias_map:
+                expr = ExcelParser._replace_aliases(expr, seg.alias_map)
+            return expr
 
         # 无法识别的规则，直接输出为注释
         self._note(f"字段 {fm.target_en_name}({fm.target_cn_name}) 映射规则无法自动转换: '{rule}'")
@@ -1145,6 +1327,37 @@ BEGIN
                         f"可能需要数值→字符串转换"
                     )
 
+    def _lookup_case_dict(
+        self, fm: FieldMapping, seg: MappingSegment
+    ) -> Optional[str]:
+        """从 CASE 字典中查找映射。命中返回 CASE 表达式，未命中返回 None。"""
+        if not self.case_dict:
+            return None
+        source_field = fm.source_field
+        if not source_field:
+            return None
+        # 去掉聚合函数包装：MAX(FIELD) → FIELD
+        m = re.match(r'\w+\((\w+)\)', source_field)
+        if m:
+            source_field = m.group(1)
+        # 去掉全角括号清洗后的残留
+        source_field = re.sub(r'[（）]', '', source_field).strip()
+
+        expr = self.case_dict.lookup(fm.target_en_name, source_field)
+        if expr:
+            # 替换表别名为当前段的实际别名
+            alias = self._resolve_alias(fm, seg)
+            # 将手写 SQL 中的 Tn. 前缀统一替换为当前段的别名
+            result = re.sub(r'\bT\d+\.', f'{alias}.', expr)
+            # 清理空行
+            result = re.sub(r'\n\s*\n', '\n', result)
+            self._note(
+                f"字段 {fm.target_en_name}({fm.target_cn_name}) "
+                f"使用字典中的 CASE 映射（源: {source_field}）"
+            )
+            return result
+        return None
+
     def _is_date_conversion(self, fm: FieldMapping) -> bool:
         """判断是否需要日期格式转换"""
         src_type = fm.source_type.upper() if fm.source_type else ''
@@ -1184,7 +1397,16 @@ def main():
     parser.add_argument('sheet_name', help='Sheet 名称')
     parser.add_argument('-o', '--output', help='输出 SQL 文件路径（默认输出到标准输出）')
     parser.add_argument('-v', '--verbose', action='store_true', help='显示详细信息')
+    parser.add_argument('--dict-from', dest='dict_from', metavar='DIR',
+                        help='从指定目录的手写 SQL 文件中提取 CASE 映射字典')
     args = parser.parse_args()
+
+    # 加载 CASE 字典
+    case_dict = None
+    if args.dict_from:
+        case_dict = CaseDictExtractor()
+        n = case_dict.load_from_directory(args.dict_from)
+        print(f"[信息] 从 {args.dict_from} 加载了 {n} 个 CASE 映射", file=sys.stderr)
 
     # 解析 Excel
     ep = ExcelParser(args.excel_file, args.sheet_name)
@@ -1209,7 +1431,7 @@ def main():
             print(f"    字段: {len(seg.field_mappings)} 个", file=sys.stderr)
 
     # 生成 SQL
-    gen = SQLGenerator(mapping)
+    gen = SQLGenerator(mapping, case_dict=case_dict)
     sql = gen.generate()
 
     # 输出注意事项

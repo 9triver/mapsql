@@ -17,11 +17,13 @@
 
 - 标题行：`数据源表：表名 | 表中文名 | 表别名 | 关联类型 | 关联关系 | 备注说明`
 - **第一行为主表**（无关联类型），后续行为关联表
-- 关联类型：`left join` / `inner join`
+- 关联类型：`left join` / `inner join` / `无`
 - 关联关系：写的是 ON 条件（如 `T1.CUST_ID = T2.CUST_ID AND T1.DATE_ID=T2.DATE_ID`）
+- **关联类型为"无"**：表示该表不参与 JOIN，仅在 WHERE 子查询中引用（如 `Not Exists(Select 1 From 表名 别名 Where ...)`）。不生成 JOIN 语句，但子查询中需用完整表名+别名
 - **关键规则：所有定义的表都必须出现在生成的 SQL 中**，即使没有字段直接映射自该表
   - INNER JOIN 起数据过滤作用
   - LEFT JOIN 可能被字段引用或预留
+  - 关联类型"无"在 WHERE 子查询中引用
 
 ### 3. 数据范围条件区
 
@@ -141,6 +143,23 @@ CASE WHEN T1.FLAG_FIELD = 'Y' THEN '1' ELSE '0' END,
 
 **识别信号**：源字段名含 `_FLAG`，且目标字典为 `0/1` 或 `是/否`。
 
+#### 映射规则列已有 CASE WHEN 表达式
+
+Col10 中可能包含完整的 CASE WHEN ... END 表达式（源到目标的码值映射），此时直接使用即可，无需额外转换。需注意：
+
+- Oracle `IS 'val'` 语法需修正为 `= 'val'`
+- 裸列名需补表别名前缀
+- 旧别名需替换为统一的 Tn 格式
+
+```sql
+-- Col10 原文直接输出
+CASE
+    WHEN T1.TYPE_CODE like '01%' THEN '03'
+    WHEN T1.TYPE_CODE like '02%' THEN '01'
+    ELSE '11'
+END,
+```
+
 #### 条件取值
 
 映射规则写了 IF/CASE 逻辑：
@@ -216,6 +235,15 @@ Excel 中的文本可能包含非标准字符，生成 SQL 前需清洗：
 
 - 按 Excel 数据范围条件区逐行生成
 - 第一个条件用 WHERE，后续用 AND
+- **别名替换**：WHERE 条件中的旧别名（A/B/C）必须同步替换为 Tn 格式
+- **关联类型"无"的表在子查询中展开**：`From C Where` → `From DS_TABLE_NAME T2 Where`（因为该表不在 FROM 子句中，需用完整表名）
+
+### 6. GROUP BY 子句
+
+当 SELECT 中出现聚合函数（SUM/MAX/MIN/COUNT/GROUP_CONCAT）时，必须为非聚合字段生成 GROUP BY 子句。
+
+- **排除常量表达式**：`''`（空字符串）、`V_DATE`、纯数字等不应出现在 GROUP BY 中
+- 仅包含实际引用了表字段的表达式
 
 ---
 
@@ -249,6 +277,10 @@ Excel 中的文本可能包含非标准字符，生成 SQL 前需清洗：
 | 22 | **全角字符需转半角** | Excel 中 `（），；` 等全角字符不是合法 SQL，需转为半角 |
 | 23 | **Oracle 残留语法需全部转换** | NVL→IFNULL、TO_DATE→STR_TO_DATE、IF...THEN→CASE WHEN、DECODE→CASE |
 | 24 | **别名必须统一为 Tn 格式** | Excel 中 A/B/C 别名需替换为 T1/T2/T3，否则 SQL 中出现未定义别名 |
+| 25 | **Col10 已有 CASE WHEN 表达式需直接使用** | 映射规则列已写好完整 CASE WHEN ... END，直接输出，不要包装为 TODO 注释 |
+| 26 | **关联类型"无"不生成 JOIN** | 该表仅在 WHERE 子查询中引用（如 Not Exists），不输出 JOIN 语句 |
+| 27 | **WHERE 条件中的别名也需替换** | A/B/C 别名不仅在 JOIN 和 SELECT 中替换，WHERE 条件中同样需要 |
+| 28 | **GROUP BY 排除常量** | `''`、`V_DATE`、数字等常量不应出现在 GROUP BY 中 |
 
 ### 别名提取与统一规则
 
@@ -259,7 +291,7 @@ Excel 别名列格式多样，提取优先级：
 3. 第一个 token 为纯英文标识符时取该 token
 4. 纯中文（如 "主表"）→ 返回空，由程序自动分配 `T{n}`
 
-**别名统一**：生成 SQL 时，所有表别名应统一为 `T1`, `T2`, ... 格式。如果 Excel 使用了 A/B/C 等单字母别名，需在字段映射和 JOIN 条件中同步替换为对应的 `Tn` 别名，否则会产生未定义别名错误。
+**别名统一**：生成 SQL 时，所有表别名应统一为 `T1`, `T2`, ... 格式。如果 Excel 使用了 A/B/C 等单字母别名，需在字段映射、JOIN 条件和 WHERE 条件中同步替换为对应的 `Tn` 别名，否则会产生未定义别名错误。别名替换需匹配两种模式：`A.FIELD`（别名.字段）和独立的 `A`（如子查询中的 `From A Where`）。
 
 ### Excel 常见笔误模式（需人工判断修正）
 
