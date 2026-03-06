@@ -622,13 +622,16 @@ class CaseDictExtractor:
             text = f.read()
 
         count = 0
-        # 匹配 INSERT INTO table (cols) \n select ... \nfrom
+        # 匹配 INSERT [/*+ hint */] INTO table (cols) \n select ... \nfrom
         # 使用 \nfrom (行首 from) 避免匹配 CASE 表达式内的 from
         for m in re.finditer(
-            r'insert\s+into\s+\w+\s*\(([^)]+)\)\s*\n?\s*select\s+(.+?)\n\s*from\s',
+            r'insert\s+(?:/\*.*?\*/\s*)?into\s+[\w.]+\s*\(([^)]+)\)\s*\n?\s*select\s+(.+?)\n\s*from\s',
             text, re.DOTALL | re.IGNORECASE,
         ):
-            cols = [c.strip() for c in m.group(1).split(',')]
+            # 去除注释后再拆分列名
+            raw_cols = m.group(1)
+            raw_cols = re.sub(r'--[^\n]*', '', raw_cols)
+            cols = [c.strip() for c in raw_cols.split(',') if c.strip()]
             exprs = self._parse_select_exprs(m.group(2))
 
             for j in range(min(len(cols), len(exprs))):
@@ -1398,15 +1401,21 @@ def main():
     parser.add_argument('-o', '--output', help='输出 SQL 文件路径（默认输出到标准输出）')
     parser.add_argument('-v', '--verbose', action='store_true', help='显示详细信息')
     parser.add_argument('--dict-from', dest='dict_from', metavar='DIR',
-                        help='从指定目录的手写 SQL 文件中提取 CASE 映射字典')
+                        action='append', default=[],
+                        help='从指定目录的手写 SQL 文件中提取 CASE 映射字典（可多次指定）')
     args = parser.parse_args()
 
     # 加载 CASE 字典
     case_dict = None
     if args.dict_from:
         case_dict = CaseDictExtractor()
-        n = case_dict.load_from_directory(args.dict_from)
-        print(f"[信息] 从 {args.dict_from} 加载了 {n} 个 CASE 映射", file=sys.stderr)
+        total = 0
+        for d in args.dict_from:
+            n = case_dict.load_from_directory(d)
+            total += n
+            print(f"[信息] 从 {d} 加载了 {n} 个 CASE 映射", file=sys.stderr)
+        if len(args.dict_from) > 1:
+            print(f"[信息] 合计 {total} 个 CASE 映射", file=sys.stderr)
 
     # 解析 Excel
     ep = ExcelParser(args.excel_file, args.sheet_name)

@@ -138,7 +138,7 @@ def parse_sql_structure(sql_text: str) -> list[SegmentInfo]:
     segments = []
 
     for m in re.finditer(
-        r'insert\s+into\s+[\w.]+\s*\(([^)]+)\)\s*\n?\s*select\s+(.+?)\n\s*from\s+(\S+)',
+        r'insert\s+(?:/\*.*?\*/\s*)?into\s+[\w.]+\s*\(([^)]+)\)\s*\n?\s*select\s+(.+?)\n\s*from\s+(\S+)',
         sql_text, re.DOTALL | re.IGNORECASE,
     ):
         seg = SegmentInfo()
@@ -285,7 +285,9 @@ def main():
     parser = argparse.ArgumentParser(description='语义对照测试：生成 SQL vs 手写 SQL')
     parser.add_argument('excel_file', help='Excel 映射文件')
     parser.add_argument('hand_written_dir', help='手写 SQL 文件目录')
-    parser.add_argument('--dict-from', dest='dict_from', help='CASE 字典目录')
+    parser.add_argument('--dict-from', dest='dict_from',
+                        action='append', default=[],
+                        help='CASE 字典目录（可多次指定）')
     parser.add_argument('--sheet', help='只对照指定 sheet（默认全部）')
     args = parser.parse_args()
 
@@ -325,8 +327,8 @@ def main():
             tmp_path = tmp.name
 
         cmd = ['python3', 'generate_sql.py', args.excel_file, sheet_name, '-o', tmp_path]
-        if args.dict_from:
-            cmd += ['--dict-from', args.dict_from]
+        for d in args.dict_from:
+            cmd += ['--dict-from', d]
 
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
@@ -360,7 +362,7 @@ def main():
     print(f"语义对照测试报告")
     print(f"Excel: {args.excel_file}")
     print(f"手写SQL: {sql_dir}")
-    print(f"字典: {args.dict_from or '无'}")
+    print(f"字典: {', '.join(args.dict_from) if args.dict_from else '无'}")
     print(f"{'='*70}")
     print(f"总计: {total} 个 sheet, 通过: {pass_count}, 有差异: {diff_count}")
     print()
