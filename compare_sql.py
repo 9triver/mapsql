@@ -37,22 +37,38 @@ class SegmentInfo:
 
 
 def strip_comments(text: str) -> str:
-    """去除 SQL 中的 -- 注释（不处理引号内的）。"""
-    lines = text.split('\n')
-    result = []
-    for line in lines:
-        in_str = False
-        out = []
-        for i, ch in enumerate(line):
-            if ch == "'" and not in_str:
-                in_str = True
-            elif ch == "'" and in_str:
-                in_str = False
-            elif line[i:i+2] == '--' and not in_str:
+    """去除 SQL 中的 -- 和 /* */ 注释（不处理引号内的）。"""
+    out = []
+    i = 0
+    in_str = False
+    in_block = False
+    while i < len(text):
+        ch = text[i]
+        if in_block:
+            if text[i:i+2] == '*/':
+                in_block = False
+                i += 2
+            else:
+                i += 1
+            continue
+        if ch == "'" and not in_str:
+            in_str = True
+        elif ch == "'" and in_str:
+            in_str = False
+        elif text[i:i+2] == '/*' and not in_str:
+            in_block = True
+            i += 2
+            continue
+        elif text[i:i+2] == '--' and not in_str:
+            # skip to end of line
+            j = text.find('\n', i)
+            if j < 0:
                 break
-            out.append(ch)
-        result.append(''.join(out).rstrip())
-    return '\n'.join(result)
+            i = j  # keep the \n
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
 
 
 def parse_select_exprs(select_text: str) -> list[str]:
