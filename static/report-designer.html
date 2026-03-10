@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>报表设计器</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --primary: #3b82f6;
+  --primary-dark: #2563eb;
+  --border: #e5e7eb;
+  --bg: #f3f4f6;
+  --panel-bg: #ffffff;
+  --text: #111827;
+  --text-muted: #6b7280;
+  --handle-size: 8px;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; color: var(--text); background: var(--bg); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* Toolbar */
+#toolbar { background: #1e293b; color: #f8fafc; display: flex; align-items: center; gap: 6px; padding: 6px 12px; flex-shrink: 0; border-bottom: 1px solid #334155; }
+#toolbar span.logo { font-weight: 700; font-size: 15px; margin-right: 10px; letter-spacing: 0.5px; color: var(--primary); }
+.tb-btn { background: #334155; border: 1px solid #475569; color: #f1f5f9; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: background 0.15s; white-space: nowrap; }
+.tb-btn:hover { background: #475569; }
+.tb-btn.primary { background: var(--primary); border-color: var(--primary-dark); }
+.tb-btn.primary:hover { background: var(--primary-dark); }
+.tb-sep { width: 1px; height: 20px; background: #475569; margin: 0 4px; }
+#tb-orient { display: flex; gap: 4px; margin-left: 4px; }
+#tb-orient button { background: #334155; border: 1px solid #475569; color: #f1f5f9; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+#tb-orient button.active { background: var(--primary); border-color: var(--primary-dark); }
+#tb-zoom { display: flex; align-items: center; gap: 6px; margin-left: auto; color: #94a3b8; font-size: 12px; }
+#tb-zoom input[type=range] { width: 80px; }
+
+/* Main layout */
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* Left panel */
+#panel-left { width: 160px; flex-shrink: 0; background: var(--panel-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow-y: auto; }
+#panel-left h3 { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 10px 12px 6px; border-bottom: 1px solid var(--border); }
+.comp-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: grab; user-select: none; border-bottom: 1px solid #f3f4f6; transition: background 0.1s; }
+.comp-item:hover { background: #eff6ff; }
+.comp-item:active { cursor: grabbing; }
+.comp-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+.comp-item[data-type=text] .comp-icon { background: #dbeafe; }
+.comp-item[data-type=table] .comp-icon { background: #d1fae5; }
+.comp-item[data-type=chart] .comp-icon { background: #fef3c7; }
+.comp-item[data-type=image] .comp-icon { background: #fce7f3; }
+.comp-label { font-size: 12px; font-weight: 500; }
+
+/* Canvas area */
+#canvas-wrap { flex: 1; overflow: auto; background: #e2e8f0; padding: 20px; display: flex; align-items: flex-start; justify-content: center; }
+#canvas { position: relative; background: #ffffff; box-shadow: 0 4px 24px rgba(0,0,0,0.18); flex-shrink: 0; }
+#canvas.dragover { outline: 3px dashed var(--primary); }
+
+/* Component base */
+.rcomp { position: absolute; user-select: none; }
+.rcomp .comp-inner { width: 100%; height: 100%; overflow: hidden; }
+.rcomp.selected > .comp-inner { outline: 2px solid var(--primary); }
+.rcomp .drag-area { position: absolute; inset: 0; cursor: move; z-index: 1; }
+.rcomp.selected .drag-area { cursor: move; }
+
+/* Resize handles */
+.rcomp .handle { position: absolute; width: var(--handle-size); height: var(--handle-size); background: #fff; border: 2px solid var(--primary); border-radius: 50%; z-index: 10; display: none; transform: translate(-50%, -50%); }
+.rcomp.selected .handle { display: block; }
+.handle[data-pos=tl] { top: 0; left: 0; cursor: nwse-resize; }
+.handle[data-pos=tc] { top: 0; left: 50%; cursor: ns-resize; }
+.handle[data-pos=tr] { top: 0; left: 100%; cursor: nesw-resize; }
+.handle[data-pos=ml] { top: 50%; left: 0; cursor: ew-resize; }
+.handle[data-pos=mr] { top: 50%; left: 100%; cursor: ew-resize; }
+.handle[data-pos=bl] { top: 100%; left: 0; cursor: nesw-resize; }
+.handle[data-pos=bc] { top: 100%; left: 50%; cursor: ns-resize; }
+.handle[data-pos=br] { top: 100%; left: 100%; cursor: nwse-resize; }
+
+/* Text component */
+.text-comp { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 4px 8px; word-break: break-word; }
+
+/* Table component */
+.table-comp { width: 100%; height: 100%; overflow: auto; }
+.table-comp table { width: 100%; border-collapse: collapse; }
+.table-comp th, .table-comp td { border: 1px solid #cbd5e1; padding: 4px 6px; font-size: 12px; }
+.table-comp th { background: #e2e8f0; font-weight: 600; text-align: center; }
+.table-comp td[contenteditable=true]:focus { outline: 1px solid var(--primary); background: #eff6ff; }
+
+/* Chart component */
+.chart-comp { width: 100%; height: 100%; }
+.chart-comp canvas { width: 100% !important; height: 100% !important; }
+
+/* Image component */
+.image-comp { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #f8fafc; border: 1px dashed #cbd5e1; overflow: hidden; }
+.image-comp img { max-width: 100%; max-height: 100%; }
+.image-comp .img-placeholder { color: var(--text-muted); font-size: 24px; text-align: center; }
+
+/* Right panel */
+#panel-right { width: 220px; flex-shrink: 0; background: var(--panel-bg); border-left: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+#panel-right h3 { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 10px 12px 6px; border-bottom: 1px solid var(--border); }
+#props-panel { padding: 10px; flex: 1; }
+#props-panel .empty-hint { color: var(--text-muted); font-size: 12px; text-align: center; padding: 30px 10px; }
+.prop-group { margin-bottom: 12px; }
+.prop-group label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; font-weight: 500; }
+.prop-group input[type=text], .prop-group input[type=number], .prop-group input[type=color],
+.prop-group select, .prop-group textarea {
+  width: 100%; padding: 5px 7px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 12px; color: var(--text); background: #fff;
+}
+.prop-group textarea { min-height: 60px; resize: vertical; font-family: monospace; }
+.prop-group input[type=color] { padding: 2px; height: 28px; cursor: pointer; }
+.prop-row { display: flex; gap: 6px; }
+.prop-row .prop-group { flex: 1; }
+.prop-btn { background: #f3f4f6; border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; width: 100%; margin-top: 4px; transition: background 0.1s; }
+.prop-btn:hover { background: #e5e7eb; }
+.prop-btn.danger { color: #ef4444; }
+.prop-btn.danger:hover { background: #fee2e2; }
+.prop-section-title { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: 8px; margin-top: 4px; }
+
+/* Align controls */
+.align-btns { display: flex; gap: 4px; }
+.align-btn { flex: 1; padding: 4px; border: 1px solid var(--border); background: #f9fafb; border-radius: 4px; cursor: pointer; text-align: center; font-size: 14px; transition: background 0.1s; }
+.align-btn:hover, .align-btn.active { background: #dbeafe; border-color: var(--primary); }
+
+/* Delete shortcut hint */
+#del-hint { font-size: 10px; color: var(--text-muted); text-align: center; padding: 6px; border-top: 1px solid var(--border); }
+
+/* Drag ghost */
+#drag-ghost { position: fixed; pointer-events: none; opacity: 0.5; z-index: 9999; display: none; }
+
+input[type=file] { display: none; }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div id="toolbar">
+  <span class="logo">📊 报表设计器</span>
+  <div class="tb-sep"></div>
+  <button class="tb-btn" onclick="newDocument()">新建</button>
+  <button class="tb-btn" onclick="document.getElementById('import-file').click()">导入 JSON</button>
+  <button class="tb-btn primary" onclick="exportJSON()">导出 JSON</button>
+  <div class="tb-sep"></div>
+  <button class="tb-btn" onclick="previewReport()">预览</button>
+  <div class="tb-sep"></div>
+  <div id="tb-orient">
+    <button id="btn-portrait" class="active" onclick="setOrientation('portrait')" title="纵向 A4">纵向</button>
+    <button id="btn-landscape" onclick="setOrientation('landscape')" title="横向 A4">横向</button>
+  </div>
+  <div id="tb-zoom">
+    缩放:
+    <input type="range" id="zoom-range" min="50" max="150" value="100" oninput="setZoom(this.value)">
+    <span id="zoom-label">100%</span>
+  </div>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <!-- Left panel -->
+  <div id="panel-left">
+    <h3>组件</h3>
+    <div class="comp-item" data-type="text" draggable="true">
+      <div class="comp-icon">T</div>
+      <span class="comp-label">文本/标签</span>
+    </div>
+    <div class="comp-item" data-type="table" draggable="true">
+      <div class="comp-icon">⊞</div>
+      <span class="comp-label">表格</span>
+    </div>
+    <div class="comp-item" data-type="chart" draggable="true">
+      <div class="comp-icon">📈</div>
+      <span class="comp-label">图表</span>
+    </div>
+    <div class="comp-item" data-type="image" draggable="true">
+      <div class="comp-icon">🖼</div>
+      <span class="comp-label">图片/Logo</span>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div id="canvas-wrap">
+    <div id="canvas"></div>
+  </div>
+
+  <!-- Right panel -->
+  <div id="panel-right">
+    <h3>属性</h3>
+    <div id="props-panel">
+      <div class="empty-hint">点击组件<br>查看属性</div>
+    </div>
+    <div id="del-hint">Delete 键删除选中组件</div>
+  </div>
+</div>
+
+<!-- Hidden inputs -->
+<input type="file" id="import-file" accept=".json" onchange="importJSON(this)">
+<input type="file" id="image-upload" accept="image/*" onchange="handleImageUpload(this)">
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────────────
+const A4 = { portrait: { w: 794, h: 1123 }, landscape: { w: 1123, h: 794 } };
+let state = {
+  orientation: 'portrait',
+  zoom: 1,
+  components: [],
+  selectedId: null,
+  nextId: 1,
+};
+let chartInstances = {}; // id → Chart
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+updateCanvasSize();
+setupDrop();
+setupKeyboard();
+setupPanelDrag();
+
+// ─── Canvas ──────────────────────────────────────────────────────────────────
+function updateCanvasSize() {
+  const sz = A4[state.orientation];
+  canvas.style.width = sz.w * state.zoom + 'px';
+  canvas.style.height = sz.h * state.zoom + 'px';
+}
+
+function setOrientation(o) {
+  state.orientation = o;
+  document.getElementById('btn-portrait').classList.toggle('active', o === 'portrait');
+  document.getElementById('btn-landscape').classList.toggle('active', o === 'landscape');
+  updateCanvasSize();
+}
+
+function setZoom(v) {
+  state.zoom = v / 100;
+  document.getElementById('zoom-label').textContent = v + '%';
+  canvas.style.transform = `scale(${state.zoom})`;
+  canvas.style.transformOrigin = 'top left';
+  const sz = A4[state.orientation];
+  canvas.style.width = sz.w + 'px';
+  canvas.style.height = sz.h + 'px';
+  document.getElementById('canvas-wrap').style.minWidth = sz.w * state.zoom + 'px';
+}
+
+// ─── Component Defaults ──────────────────────────────────────────────────────
+function defaultProps(type) {
+  switch(type) {
+    case 'text': return { content: '双击编辑文本', fontSize: 16, fontWeight: 'normal', color: '#111827', align: 'left', bgColor: 'transparent' };
+    case 'table': return {
+      headers: ['列1', '列2', '列3'],
+      rows: [['数据A', '数据B', '数据C'], ['数据D', '数据E', '数据F']],
+      borderColor: '#cbd5e1', headerBg: '#e2e8f0',
+    };
+    case 'chart': return { chartType: 'bar', title: '图表标题', labels: '一月,二月,三月,四月', datasets: '120,190,80,150', bgColors: '#3b82f6,#10b981,#f59e0b,#ef4444' };
+    case 'image': return { src: '', alt: '图片', objectFit: 'contain' };
+  }
+}
+
+function defaultSize(type) {
+  switch(type) {
+    case 'text': return { w: 200, h: 40 };
+    case 'table': return { w: 340, h: 120 };
+    case 'chart': return { w: 300, h: 200 };
+    case 'image': return { w: 150, h: 120 };
+  }
+}
+
+// ─── Add / Remove / Select ───────────────────────────────────────────────────
+function addComponent(type, x, y) {
+  const sz = defaultSize(type);
+  const comp = { id: 'c' + state.nextId++, type, x: Math.round(x), y: Math.round(y), w: sz.w, h: sz.h, props: defaultProps(type) };
+  state.components.push(comp);
+  renderComponent(comp);
+  selectComponent(comp.id);
+}
+
+function removeComponent(id) {
+  if(chartInstances[id]) { chartInstances[id].destroy(); delete chartInstances[id]; }
+  state.components = state.components.filter(c => c.id !== id);
+  const el = document.getElementById(id);
+  if(el) el.remove();
+  if(state.selectedId === id) { state.selectedId = null; renderProps(); }
+}
+
+function selectComponent(id) {
+  document.querySelectorAll('.rcomp.selected').forEach(el => el.classList.remove('selected'));
+  state.selectedId = id;
+  if(id) {
+    const el = document.getElementById(id);
+    if(el) el.classList.add('selected');
+  }
+  renderProps();
+}
+
+// ─── Render Component DOM ────────────────────────────────────────────────────
+function renderComponent(comp) {
+  let el = document.getElementById(comp.id);
+  if(!el) {
+    el = document.createElement('div');
+    el.id = comp.id;
+    el.className = 'rcomp';
+    // Drag area
+    const drag = document.createElement('div');
+    drag.className = 'drag-area';
+    el.appendChild(drag);
+    // Resize handles
+    ['tl','tc','tr','ml','mr','bl','bc','br'].forEach(pos => {
+      const h = document.createElement('div');
+      h.className = 'handle'; h.dataset.pos = pos;
+      el.appendChild(h);
+    });
+    // Inner
+    const inner = document.createElement('div');
+    inner.className = 'comp-inner';
+    el.appendChild(inner);
+    canvas.appendChild(el);
+    setupCompInteraction(el);
+  }
+  // Position
+  el.style.left = comp.x + 'px';
+  el.style.top = comp.y + 'px';
+  el.style.width = comp.w + 'px';
+  el.style.height = comp.h + 'px';
+  // Render inner
+  renderCompInner(comp, el.querySelector('.comp-inner'));
+}
+
+function renderCompInner(comp, inner) {
+  if(comp.type === 'text') {
+    inner.innerHTML = '';
+    const d = document.createElement('div');
+    d.className = 'text-comp';
+    d.style.fontSize = comp.props.fontSize + 'px';
+    d.style.fontWeight = comp.props.fontWeight;
+    d.style.color = comp.props.color;
+    d.style.textAlign = comp.props.align;
+    d.style.background = comp.props.bgColor;
+    d.style.justifyContent = comp.props.align === 'center' ? 'center' : comp.props.align === 'right' ? 'flex-end' : 'flex-start';
+    d.textContent = comp.props.content;
+    inner.appendChild(d);
+    // Dblclick to edit
+    d.ondblclick = (e) => {
+      e.stopPropagation();
+      d.contentEditable = 'true';
+      d.focus();
+      d.onblur = () => { d.contentEditable = 'false'; comp.props.content = d.textContent; renderProps(); };
+    };
+  } else if(comp.type === 'table') {
+    inner.innerHTML = '';
+    const d = document.createElement('div');
+    d.className = 'table-comp';
+    const t = document.createElement('table');
+    // Header row
+    const thead = document.createElement('thead');
+    const trh = document.createElement('tr');
+    comp.props.headers.forEach((h, ci) => {
+      const th = document.createElement('th');
+      th.style.background = comp.props.headerBg;
+      th.style.borderColor = comp.props.borderColor;
+      th.textContent = h;
+      th.contentEditable = 'true';
+      th.onclick = e => e.stopPropagation();
+      th.onblur = () => { comp.props.headers[ci] = th.textContent; };
+      trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+    t.appendChild(thead);
+    // Body rows
+    const tbody = document.createElement('tbody');
+    comp.props.rows.forEach((row, ri) => {
+      const tr = document.createElement('tr');
+      row.forEach((cell, ci) => {
+        const td = document.createElement('td');
+        td.style.borderColor = comp.props.borderColor;
+        td.textContent = cell;
+        td.contentEditable = 'true';
+        td.onclick = e => e.stopPropagation();
+        td.onblur = () => { comp.props.rows[ri][ci] = td.textContent; };
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    t.appendChild(tbody);
+    d.appendChild(t);
+    inner.appendChild(d);
+  } else if(comp.type === 'chart') {
+    inner.innerHTML = '';
+    if(chartInstances[comp.id]) { chartInstances[comp.id].destroy(); delete chartInstances[comp.id]; }
+    const d = document.createElement('div');
+    d.className = 'chart-comp';
+    const cv = document.createElement('canvas');
+    d.appendChild(cv);
+    inner.appendChild(d);
+    const labels = comp.props.labels.split(',').map(s => s.trim());
+    const data = comp.props.datasets.split(',').map(s => parseFloat(s.trim()) || 0);
+    const bgColors = comp.props.bgColors.split(',').map(s => s.trim());
+    const datasets = [{ label: comp.props.title, data, backgroundColor: bgColors, borderColor: bgColors, borderWidth: 1 }];
+    const cfg = { type: comp.props.chartType, data: { labels, datasets }, options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: comp.props.chartType === 'pie' }, title: { display: !!comp.props.title, text: comp.props.title } }
+    }};
+    try { chartInstances[comp.id] = new Chart(cv, cfg); } catch(e) {}
+  } else if(comp.type === 'image') {
+    inner.innerHTML = '';
+    const d = document.createElement('div');
+    d.className = 'image-comp';
+    if(comp.props.src) {
+      const img = document.createElement('img');
+      img.src = comp.props.src;
+      img.alt = comp.props.alt;
+      img.style.objectFit = comp.props.objectFit;
+      img.style.width = '100%';
+      img.style.height = '100%';
+      d.appendChild(img);
+    } else {
+      d.innerHTML = '<div class="img-placeholder">🖼<br><small>在右侧上传或输入图片URL</small></div>';
+    }
+    inner.appendChild(d);
+  }
+}
+
+function refreshComponent(id) {
+  const comp = state.components.find(c => c.id === id);
+  if(!comp) return;
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.style.left = comp.x + 'px';
+  el.style.top = comp.y + 'px';
+  el.style.width = comp.w + 'px';
+  el.style.height = comp.h + 'px';
+  renderCompInner(comp, el.querySelector('.comp-inner'));
+}
+
+// ─── Drag from Panel ─────────────────────────────────────────────────────────
+function setupPanelDrag() {
+  document.querySelectorAll('.comp-item').forEach(item => {
+    item.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('comp-type', item.dataset.type);
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+  });
+}
+
+function setupDrop() {
+  canvas.addEventListener('dragover', e => { e.preventDefault(); canvas.classList.add('dragover'); });
+  canvas.addEventListener('dragleave', () => canvas.classList.remove('dragover'));
+  canvas.addEventListener('drop', e => {
+    e.preventDefault();
+    canvas.classList.remove('dragover');
+    const type = e.dataTransfer.getData('comp-type');
+    if(!type) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / state.zoom;
+    const y = (e.clientY - rect.top) / state.zoom;
+    addComponent(type, x, y);
+  });
+  canvas.addEventListener('click', e => {
+    if(e.target === canvas) selectComponent(null);
+  });
+}
+
+// ─── Component Interaction (move + resize) ───────────────────────────────────
+function setupCompInteraction(el) {
+  el.querySelector('.drag-area').addEventListener('mousedown', e => {
+    if(e.button !== 0) return;
+    e.stopPropagation();
+    selectComponent(el.id);
+    const comp = state.components.find(c => c.id === el.id);
+    const startX = e.clientX, startY = e.clientY;
+    const ox = comp.x, oy = comp.y;
+    const onMove = ev => {
+      comp.x = Math.max(0, ox + (ev.clientX - startX) / state.zoom);
+      comp.y = Math.max(0, oy + (ev.clientY - startY) / state.zoom);
+      el.style.left = comp.x + 'px';
+      el.style.top = comp.y + 'px';
+    };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  el.querySelectorAll('.handle').forEach(handle => {
+    handle.addEventListener('mousedown', e => {
+      if(e.button !== 0) return;
+      e.stopPropagation();
+      const pos = handle.dataset.pos;
+      const comp = state.components.find(c => c.id === el.id);
+      const sx = e.clientX, sy = e.clientY;
+      const ox = comp.x, oy = comp.y, ow = comp.w, oh = comp.h;
+      const MIN = 40;
+      const onMove = ev => {
+        const dx = (ev.clientX - sx) / state.zoom;
+        const dy = (ev.clientY - sy) / state.zoom;
+        if(pos.includes('r')) comp.w = Math.max(MIN, ow + dx);
+        if(pos.includes('l')) { const nw = Math.max(MIN, ow - dx); comp.x = ox + ow - nw; comp.w = nw; }
+        if(pos.includes('b')) comp.h = Math.max(MIN, oh + dy);
+        if(pos.includes('t')) { const nh = Math.max(MIN, oh - dy); comp.y = oy + oh - nh; comp.h = nh; }
+        el.style.left = comp.x + 'px'; el.style.top = comp.y + 'px';
+        el.style.width = comp.w + 'px'; el.style.height = comp.h + 'px';
+        // Resize chart
+        if(comp.type === 'chart' && chartInstances[comp.id]) chartInstances[comp.id].resize();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if(state.selectedId === comp.id) renderProps();
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+
+  el.addEventListener('click', e => {
+    e.stopPropagation();
+    selectComponent(el.id);
+  });
+}
+
+// ─── Properties Panel ────────────────────────────────────────────────────────
+function renderProps() {
+  const panel = document.getElementById('props-panel');
+  if(!state.selectedId) {
+    panel.innerHTML = '<div class="empty-hint">��击组件<br>查看属性</div>';
+    return;
+  }
+  const comp = state.components.find(c => c.id === state.selectedId);
+  if(!comp) { panel.innerHTML = ''; return; }
+
+  let html = '';
+
+  // Position/size
+  html += `<div class="prop-section-title">位置与尺寸</div>`;
+  html += `<div class="prop-row">
+    <div class="prop-group"><label>X</label><input type="number" id="px" value="${Math.round(comp.x)}" onchange="setProp('pos','x',+this.value)"></div>
+    <div class="prop-group"><label>Y</label><input type="number" id="py" value="${Math.round(comp.y)}" onchange="setProp('pos','y',+this.value)"></div>
+  </div>
+  <div class="prop-row">
+    <div class="prop-group"><label>宽</label><input type="number" id="pw" value="${Math.round(comp.w)}" onchange="setProp('pos','w',+this.value)"></div>
+    <div class="prop-group"><label>高</label><input type="number" id="ph" value="${Math.round(comp.h)}" onchange="setProp('pos','h',+this.value)"></div>
+  </div>`;
+
+  html += `<div class="prop-section-title" style="margin-top:10px">${{text:'文本',table:'表格',chart:'图表',image:'图片'}[comp.type]}属性</div>`;
+
+  if(comp.type === 'text') {
+    html += `
+    <div class="prop-group"><label>内容</label><input type="text" value="${esc(comp.props.content)}" oninput="setProp('content',null,this.value)"></div>
+    <div class="prop-row">
+      <div class="prop-group"><label>字号(px)</label><input type="number" value="${comp.props.fontSize}" min="8" max="120" onchange="setProp('fontSize',null,+this.value)"></div>
+      <div class="prop-group"><label>颜色</label><input type="color" value="${comp.props.color}" oninput="setProp('color',null,this.value)"></div>
+    </div>
+    <div class="prop-row">
+      <div class="prop-group"><label>背景色</label><input type="color" value="${comp.props.bgColor === 'transparent' ? '#ffffff' : comp.props.bgColor}" oninput="setProp('bgColor',null,this.value)"></div>
+      <div class="prop-group"><label>加粗</label>
+        <select onchange="setProp('fontWeight',null,this.value)">
+          <option value="normal" ${comp.props.fontWeight==='normal'?'selected':''}>正常</option>
+          <option value="bold" ${comp.props.fontWeight==='bold'?'selected':''}>加粗</option>
+        </select>
+      </div>
+    </div>
+    <div class="prop-group"><label>对齐</label>
+      <div class="align-btns">
+        <div class="align-btn ${comp.props.align==='left'?'active':''}" onclick="setProp('align',null,'left')">≡</div>
+        <div class="align-btn ${comp.props.align==='center'?'active':''}" onclick="setProp('align',null,'center')">☰</div>
+        <div class="align-btn ${comp.props.align==='right'?'active':''}" onclick="setProp('align',null,'right')">≡</div>
+      </div>
+    </div>`;
+  } else if(comp.type === 'table') {
+    html += `
+    <div class="prop-row">
+      <div class="prop-group"><label>列数</label><input type="number" value="${comp.props.headers.length}" min="1" max="20" onchange="resizeTable('cols',+this.value)"></div>
+      <div class="prop-group"><label>行数</label><input type="number" value="${comp.props.rows.length}" min="1" max="50" onchange="resizeTable('rows',+this.value)"></div>
+    </div>
+    <div class="prop-row">
+      <div class="prop-group"><label>边框颜色</label><input type="color" value="${comp.props.borderColor}" oninput="setProp('borderColor',null,this.value)"></div>
+      <div class="prop-group"><label>表头背景</label><input type="color" value="${comp.props.headerBg}" oninput="setProp('headerBg',null,this.value)"></div>
+    </div>
+    <div class="prop-group"><label>提示</label><small style="color:var(--text-muted)">直接点击表格单元格可编辑内容</small></div>`;
+  } else if(comp.type === 'chart') {
+    html += `
+    <div class="prop-group"><label>图表类型</label>
+      <select onchange="setProp('chartType',null,this.value)">
+        <option value="bar" ${comp.props.chartType==='bar'?'selected':''}>柱状图</option>
+        <option value="line" ${comp.props.chartType==='line'?'selected':''}>折线图</option>
+        <option value="pie" ${comp.props.chartType==='pie'?'selected':''}>饼图</option>
+        <option value="doughnut" ${comp.props.chartType==='doughnut'?'selected':''}>环形图</option>
+      </select>
+    </div>
+    <div class="prop-group"><label>标题</label><input type="text" value="${esc(comp.props.title)}" oninput="setProp('title',null,this.value)"></div>
+    <div class="prop-group"><label>标签（逗号分隔）</label><input type="text" value="${esc(comp.props.labels)}" oninput="setProp('labels',null,this.value)"></div>
+    <div class="prop-group"><label>数据（逗号分隔）</label><input type="text" value="${esc(comp.props.datasets)}" oninput="setProp('datasets',null,this.value)"></div>
+    <div class="prop-group"><label>颜色（逗号分隔）</label><input type="text" value="${esc(comp.props.bgColors)}" oninput="setProp('bgColors',null,this.value)"></div>`;
+  } else if(comp.type === 'image') {
+    html += `
+    <div class="prop-group"><label>图片 URL</label><input type="text" placeholder="https://..." value="${esc(comp.props.src)}" oninput="setProp('src',null,this.value)"></div>
+    <button class="prop-btn" onclick="document.getElementById('image-upload').click()">上传本地图片</button>
+    <div class="prop-group" style="margin-top:8px"><label>填充方式</label>
+      <select onchange="setProp('objectFit',null,this.value)">
+        <option value="contain" ${comp.props.objectFit==='contain'?'selected':''}>等比缩放</option>
+        <option value="cover" ${comp.props.objectFit==='cover'?'selected':''}>裁剪填满</option>
+        <option value="fill" ${comp.props.objectFit==='fill'?'selected':''}>拉伸填满</option>
+      </select>
+    </div>`;
+  }
+
+  html += `<button class="prop-btn danger" style="margin-top:16px" onclick="removeComponent('${comp.id}')">删除组件</button>`;
+  panel.innerHTML = html;
+}
+
+function esc(s) { return (s||'').replace(/"/g,'&quot;'); }
+
+function setProp(key, subkey, val) {
+  const comp = state.components.find(c => c.id === state.selectedId);
+  if(!comp) return;
+  if(key === 'pos') {
+    comp[subkey] = Math.max(0, val);
+  } else {
+    comp.props[key] = val;
+  }
+  refreshComponent(comp.id);
+}
+
+function resizeTable(dim, val) {
+  const comp = state.components.find(c => c.id === state.selectedId);
+  if(!comp || comp.type !== 'table') return;
+  if(dim === 'cols') {
+    const cur = comp.props.headers.length;
+    if(val > cur) {
+      for(let i = cur; i < val; i++) { comp.props.headers.push('列' + (i+1)); comp.props.rows.forEach(r => r.push('')); }
+    } else if(val < cur) {
+      comp.props.headers = comp.props.headers.slice(0, val);
+      comp.props.rows = comp.props.rows.map(r => r.slice(0, val));
+    }
+  } else {
+    const cur = comp.props.rows.length;
+    if(val > cur) {
+      for(let i = cur; i < val; i++) comp.props.rows.push(comp.props.headers.map(() => ''));
+    } else {
+      comp.props.rows = comp.props.rows.slice(0, val);
+    }
+  }
+  refreshComponent(comp.id);
+  renderProps();
+}
+
+function handleImageUpload(input) {
+  const file = input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    setProp('src', null, e.target.result);
+    renderProps();
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+
+// ─── Keyboard ────────────────────────────────────────────────────────────────
+function setupKeyboard() {
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Delete' || e.key === 'Backspace') {
+      if(document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.contentEditable === 'true') return;
+      if(state.selectedId) { removeComponent(state.selectedId); }
+    }
+    if(e.key === 'Escape') { selectComponent(null); }
+  });
+}
+
+// ─── Document ops ────────────────────────────────────────────────────────────
+function newDocument() {
+  if(state.components.length && !confirm('清空画布？未导出的内容将丢失。')) return;
+  Object.values(chartInstances).forEach(c => c.destroy());
+  chartInstances = {};
+  state.components = [];
+  state.selectedId = null;
+  state.nextId = 1;
+  canvas.innerHTML = '';
+  renderProps();
+}
+
+function exportJSON() {
+  const sz = A4[state.orientation];
+  const data = { version: '1.0', pageSize: 'A4', orientation: state.orientation, pageWidth: sz.w, pageHeight: sz.h, components: state.components };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'report-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function importJSON(input) {
+  const file = input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if(!data.components) throw new Error('格式错误');
+      newDocument();
+      state.orientation = data.orientation || 'portrait';
+      document.getElementById('btn-portrait').classList.toggle('active', state.orientation === 'portrait');
+      document.getElementById('btn-landscape').classList.toggle('active', state.orientation === 'landscape');
+      updateCanvasSize();
+      // Find max id
+      let maxId = 0;
+      data.components.forEach(comp => {
+        const n = parseInt(comp.id.replace('c',''));
+        if(n > maxId) maxId = n;
+        state.components.push(comp);
+        renderComponent(comp);
+      });
+      state.nextId = maxId + 1;
+      alert(`导入成功：${data.components.length} 个组件`);
+    } catch(err) { alert('导入失败：' + err.message); }
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+// ─── Preview ─────────────────────────────────────────────────────────────────
+function previewReport() {
+  const sz = A4[state.orientation];
+  let comps = '';
+  state.components.forEach(comp => {
+    let inner = '';
+    if(comp.type === 'text') {
+      const p = comp.props;
+      inner = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:${p.align==='center'?'center':p.align==='right'?'flex-end':'flex-start'};font-size:${p.fontSize}px;font-weight:${p.fontWeight};color:${p.color};background:${p.bgColor};padding:4px 8px;word-break:break-word">${p.content}</div>`;
+    } else if(comp.type === 'table') {
+      const p = comp.props;
+      const hdrs = p.headers.map(h => `<th style="background:${p.headerBg};border:1px solid ${p.borderColor};padding:4px 6px;font-size:12px;font-weight:600;text-align:center">${h}</th>`).join('');
+      const rows = p.rows.map(row => '<tr>' + row.map(cell => `<td style="border:1px solid ${p.borderColor};padding:4px 6px;font-size:12px">${cell}</td>`).join('') + '</tr>').join('');
+      inner = `<div style="width:100%;height:100%;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>${hdrs}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    } else if(comp.type === 'chart') {
+      inner = `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:#f8fafc;font-size:13px;color:#6b7280">[图表: ${comp.props.title}]</div>`;
+    } else if(comp.type === 'image') {
+      if(comp.props.src) inner = `<img src="${comp.props.src}" style="width:100%;height:100%;object-fit:${comp.props.objectFit}">`;
+      else inner = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:22px">🖼</div>`;
+    }
+    comps += `<div style="position:absolute;left:${comp.x}px;top:${comp.y}px;width:${comp.w}px;height:${comp.h}px;overflow:hidden">${inner}</div>`;
+  });
+
+  const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>报表预览</title>
+  <style>body{margin:0;background:#e2e8f0;display:flex;justify-content:center;padding:20px}@media print{body{background:#fff;padding:0}}</style>
+  </head><body><div style="position:relative;width:${sz.w}px;height:${sz.h}px;background:#fff;box-shadow:0 4px 20px rgba(0,0,0,.15)">${comps}</div></body></html>`;
+
+  const w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
+}
+</script>
+</body>
+</html>

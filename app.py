@@ -197,7 +197,7 @@ def download_sql(sheet_name):
 if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser(description='MapSQL Web UI')
-    p.add_argument('--port', type=int, default=6000)
+    p.add_argument('--port', type=int, default=8080)
     p.add_argument('--host', default='127.0.0.1')
     args = p.parse_args()
 

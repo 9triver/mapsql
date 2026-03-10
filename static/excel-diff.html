@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Excel 差异对比</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --add:    #d1fae5; --add-b:    #059669;
+  --del:    #fee2e2; --del-b:    #dc2626;
+  --mod:    #fef3c7; --mod-b:    #d97706;
+  --same:   #ffffff;
+  --col-add: #eff6ff; --col-add-b: #3b82f6;
+  --col-del: #fdf2f8; --col-del-b: #a855f7;
+  --border: #e5e7eb;
+  --primary: #3b82f6;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; color: #111827; background: #f3f4f6; min-height: 100vh; }
+
+/* Header */
+header { background: #1e293b; color: #f8fafc; padding: 10px 20px; display: flex; align-items: center; gap: 12px; }
+header h1 { font-size: 16px; font-weight: 700; }
+header span { font-size: 12px; color: #94a3b8; }
+
+/* Upload zone */
+#upload-section { display: flex; gap: 16px; padding: 16px 20px; background: #fff; border-bottom: 1px solid var(--border); flex-wrap: wrap; align-items: flex-end; }
+.file-box { flex: 1; min-width: 220px; }
+.file-box label.title { display: block; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.file-upload-area { border: 2px dashed var(--border); border-radius: 8px; padding: 14px; text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s; position: relative; }
+.file-upload-area:hover, .file-upload-area.drag { border-color: var(--primary); background: #eff6ff; }
+.file-upload-area input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.file-upload-area .icon { font-size: 22px; }
+.file-upload-area .hint { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+.file-upload-area .filename { font-size: 12px; font-weight: 600; color: var(--primary); margin-top: 4px; }
+.sheet-select { margin-top: 8px; display: flex; align-items: center; gap: 6px; }
+.sheet-select label { font-size: 12px; color: #6b7280; flex-shrink: 0; }
+.sheet-select select { flex: 1; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+.file-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; }
+.tag-a { background: #dbeafe; color: #1d4ed8; }
+.tag-b { background: #dcfce7; color: #15803d; }
+
+#compare-btn { background: var(--primary); color: #fff; border: none; padding: 10px 28px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background 0.15s; align-self: flex-end; }
+#compare-btn:hover { background: #2563eb; }
+#compare-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+
+/* Summary bar */
+#summary { display: none; padding: 10px 20px; background: #fff; border-bottom: 1px solid var(--border); display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+.stat-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.stat-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.stat-num { font-weight: 700; font-size: 15px; }
+
+/* Filters */
+#filters { display: none; padding: 8px 20px; background: #f8fafc; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#filters span { font-size: 12px; color: #6b7280; }
+.filter-btn { padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: #fff; font-size: 12px; cursor: pointer; transition: all 0.1s; }
+.filter-btn.active { font-weight: 600; }
+.filter-btn.f-add.active  { background: var(--add);  border-color: var(--add-b);  color: var(--add-b); }
+.filter-btn.f-del.active  { background: var(--del);  border-color: var(--del-b);  color: var(--del-b); }
+.filter-btn.f-mod.active  { background: var(--mod);  border-color: var(--mod-b);  color: var(--mod-b); }
+.filter-btn.f-same.active { background: #f3f4f6; border-color: #9ca3af; color: #374151; }
+#show-unchanged { font-size: 12px; display: flex; align-items: center; gap: 5px; cursor: pointer; margin-left: auto; }
+
+/* Sheet tabs */
+#sheet-tabs { display: none; padding: 0 20px; background: #fff; border-bottom: 1px solid var(--border); display: flex; gap: 0; overflow-x: auto; }
+.sheet-tab { padding: 9px 16px; font-size: 12px; font-weight: 500; cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; color: #6b7280; transition: color 0.1s; }
+.sheet-tab:hover { color: var(--primary); }
+.sheet-tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.sheet-tab .tab-badge { display: inline-block; background: #fee2e2; color: #dc2626; border-radius: 10px; padding: 0 5px; font-size: 10px; margin-left: 4px; }
+.sheet-tab .tab-badge.none { background: #f3f4f6; color: #9ca3af; }
+
+/* Result */
+#result { padding: 16px 20px; }
+#result .no-diff { text-align: center; padding: 40px; color: #9ca3af; font-size: 15px; }
+
+/* Diff table */
+.diff-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; }
+.diff-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+/* shared th base */
+.diff-table th { padding: 6px 10px; text-align: left; font-weight: 600; white-space: nowrap; vertical-align: top; border-bottom: 1px solid var(--border); }
+/* column header row (thead) */
+.diff-table thead th { background: #f1f5f9; font-size: 11px; color: #475569; position: sticky; top: 0; z-index: 2; }
+.diff-table thead th.col-key  { background: #fef9c3 !important; color: #854d0e; }
+.diff-table thead th.col-add  { background: var(--col-add); color: var(--col-add-b); }
+.diff-table thead th.col-del  { background: var(--col-del); color: var(--col-del-b); text-decoration: line-through; }
+/* row identifier column (tbody key cells) */
+.diff-table tbody th { background: #fef9c3; color: #854d0e; font-size: 12px; border-right: 2px solid #e9d97d; }
+.diff-table tr.row-add th, .diff-table tr.row-add td { background: var(--add); }
+.diff-table tr.row-del th, .diff-table tr.row-del td { background: var(--del); }
+.diff-table tr.row-same td { background: var(--same); }
+.diff-table tr.row-mod td { background: var(--same); }
+.diff-table td { padding: 6px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; max-width: 280px; word-break: break-all; }
+.diff-table tr:last-child td, .diff-table tr:last-child th { border-bottom: none; }
+.diff-table td.cell-mod { background: var(--mod); }
+.diff-table td.col-add-cell { background: #eff6ff; }
+.diff-table td.col-del-cell { background: #fdf2f8; color: #a855f7; text-decoration: line-through; opacity: 0.7; }
+
+.row-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; margin-right: 4px; white-space: nowrap; }
+.badge-add  { background: var(--add-b);  color: #fff; }
+.badge-del  { background: var(--del-b);  color: #fff; }
+.badge-mod  { background: var(--mod-b);  color: #fff; }
+
+.cell-diff { display: flex; flex-direction: column; gap: 2px; }
+.cell-old { color: var(--del-b); text-decoration: line-through; font-size: 11px; }
+.cell-new { color: var(--add-b); font-size: 11px; font-weight: 600; }
+.cell-arrow { font-size: 10px; color: #9ca3af; }
+
+.diff-table tr.hidden-row { display: none; }
+
+/* Legend */
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #6b7280; margin-bottom: 10px; }
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-color { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+
+/* Col diff summary */
+.col-diff-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
+.col-pill { padding: 2px 10px; border-radius: 12px; font-weight: 600; }
+.col-pill.add { background: var(--col-add); color: var(--col-add-b); border: 1px solid var(--col-add-b); }
+.col-pill.del { background: var(--col-del); color: var(--col-del-b); border: 1px solid var(--col-del-b); }
+
+/* Empty state */
+#empty-state { text-align: center; padding: 60px 20px; color: #9ca3af; }
+#empty-state .big-icon { font-size: 48px; }
+#empty-state p { margin-top: 10px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📊 Excel 差异对比</h1>
+  <span>上传两个 Excel，自动对比行、列、单元格差异</span>
+</header>
+
+<div id="upload-section">
+  <!-- File A -->
+  <div class="file-box">
+    <label class="title"><span class="file-tag tag-a">A</span> 文件（旧版 / 基准）</label>
+    <div class="file-upload-area" id="drop-a">
+      <input type="file" id="file-a" accept=".xlsx,.xls,.csv" onchange="loadFile('a', this)">
+      <div class="icon">📄</div>
+      <div class="hint">点击或拖拽上传 Excel / CSV</div>
+      <div class="filename" id="name-a"></div>
+    </div>
+    <div class="sheet-select" id="sheet-sel-a" style="display:none">
+      <label>Sheet:</label>
+      <select id="sheets-a" onchange="onSheetChange()"></select>
+    </div>
+  </div>
+
+  <!-- File B -->
+  <div class="file-box">
+    <label class="title"><span class="file-tag tag-b">B</span> 文件（新版 / 对比）</label>
+    <div class="file-upload-area" id="drop-b">
+      <input type="file" id="file-b" accept=".xlsx,.xls,.csv" onchange="loadFile('b', this)">
+      <div class="icon">📄</div>
+      <div class="hint">点击或拖拽上传 Excel / CSV</div>
+      <div class="filename" id="name-b"></div>
+    </div>
+    <div class="sheet-select" id="sheet-sel-b" style="display:none">
+      <label>Sheet:</label>
+      <select id="sheets-b" onchange="onSheetChange()"></select>
+    </div>
+  </div>
+
+  <!-- Config row -->
+  <div id="diff-config" style="display:none; width:100%; padding-top:10px; border-top:1px dashed var(--border); gap:16px; align-items:center; flex-wrap:wrap;">
+    <span style="font-size:12px;color:#6b7280;font-weight:600;">⚙ 对比设置：</span>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;">
+      列头行（从1起）
+      <input type="number" id="cfg-header-row" min="1" max="30" placeholder="自动"
+             style="width:68px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;"
+             onchange="onCfgChange()">
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;">
+      行标识列（唯一键）
+      <select id="cfg-key-col" onchange="cfg.keyCol=parseInt(this.value)"
+              style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;min-width:160px;">
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;">
+      数据起始行（从1起）
+      <input type="number" id="cfg-data-start" min="1" max="200" placeholder="自动"
+             style="width:68px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;"
+             onchange="cfg.dataStart = this.value.trim()==='' ? null : parseInt(this.value)">
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;">
+      数据截止行（从1起）
+      <input type="number" id="cfg-data-end" min="1" max="9999" placeholder="自动（到末行）"
+             style="width:120px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;"
+             onchange="cfg.dataEnd = this.value.trim()==='' ? null : parseInt(this.value)">
+    </label>
+  </div>
+
+  <button id="compare-btn" onclick="runCompare()" disabled>开始对比</button>
+</div>
+
+<!-- Summary -->
+<div id="summary" style="display:none">
+  <div class="stat-item"><div class="stat-dot" style="background:var(--add-b)"></div><span class="stat-num" id="s-add">0</span> 新增行</div>
+  <div class="stat-item"><div class="stat-dot" style="background:var(--del-b)"></div><span class="stat-num" id="s-del">0</span> 删除行</div>
+  <div class="stat-item"><div class="stat-dot" style="background:var(--mod-b)"></div><span class="stat-num" id="s-mod">0</span> 修改行</div>
+  <div class="stat-item"><div class="stat-dot" style="background:var(--col-add-b)"></div><span class="stat-num" id="s-cadd">0</span> 新增列</div>
+  <div class="stat-item"><div class="stat-dot" style="background:var(--col-del-b)"></div><span class="stat-num" id="s-cdel">0</span> 删除列</div>
+  <div class="stat-item" style="margin-left:auto"><span class="stat-num" id="s-same" style="color:#9ca3af">0</span> <span style="color:#9ca3af">行无变化</span></div>
+</div>
+
+<!-- Filters -->
+<div id="filters" style="display:none">
+  <span>显示：</span>
+  <button class="filter-btn f-add active" onclick="toggleFilter('add', this)">🟢 新增行</button>
+  <button class="filter-btn f-del active" onclick="toggleFilter('del', this)">🔴 删除行</button>
+  <button class="filter-btn f-mod active" onclick="toggleFilter('mod', this)">🟡 修改行</button>
+  <label id="show-unchanged">
+    <input type="checkbox" id="chk-same" checked onchange="toggleSame(this.checked)"> 显示无变化行
+  </label>
+  <button id="export-btn" onclick="exportExcel()" style="margin-left:12px;padding:4px 14px;background:#059669;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">⬇ 导出差异 Excel</button>
+</div>
+
+<!-- Sheet tabs -->
+<div id="sheet-tabs" style="display:none"></div>
+
+<!-- Result -->
+<div id="result">
+  <div id="empty-state">
+    <div class="big-icon">📂</div>
+    <p>上传两个 Excel 文件后点击「开始对比」</p>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const wb = { a: null, b: null };
+let diffResults = {}; // sheetName → diffData
+let activeSheet = '';
+let activeFilters = { add: true, del: true, mod: true, same: true };
+let cfg = { headerRow: null, keyCol: 0, dataStart: null, dataEnd: null }; // null = auto-detect
+
+// ── File loading ───────────────────────────────────────────────────────────
+function loadFile(side, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      wb[side] = XLSX.read(data, { type: 'array' });
+      document.getElementById(`name-${side}`).textContent = file.name;
+      const sel = document.getElementById(`sheets-${side}`);
+      sel.innerHTML = wb[side].SheetNames.map(s => `<option>${s}</option>`).join('');
+      document.getElementById(`sheet-sel-${side}`).style.display = 'flex';
+      // Auto-match sheet names
+      if (side === 'b' && wb.a) autoMatchSheets();
+      checkReady();
+      if (side === 'a') renderSheetA();
+    } catch(err) { alert('读取失败: ' + err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+  input.value = '';
+}
+
+function autoMatchSheets() {
+  const selA = document.getElementById('sheets-a');
+  const selB = document.getElementById('sheets-b');
+  const sheetA = selA.value;
+  const optsB = Array.from(selB.options).map(o => o.value);
+  if (optsB.includes(sheetA)) selB.value = sheetA;
+}
+
+function onSheetChange() {
+  checkReady();
+  if (wb.a) renderSheetA();
+}
+
+function checkReady() {
+  const ready = wb.a && wb.b;
+  document.getElementById('compare-btn').disabled = !ready;
+}
+
+function renderSheetA() {
+  const sheetName = document.getElementById('sheets-a').value;
+  const rows = getSheetRows(wb.a, sheetName);
+  if (!rows.length) return;
+
+  // Hide summary/filters, reset diff state
+  document.getElementById('summary').style.display = 'none';
+  document.getElementById('filters').style.display = 'none';
+  document.getElementById('sheet-tabs').style.display = 'none';
+  diffResults = {};
+  activeSheet = '';
+
+  // Find max col count
+  const maxCols = Math.max(...rows.map(r => r.length));
+
+  const headerIdx = cfg.headerRow !== null ? cfg.headerRow : findHeaderRow(rows);
+  const keyCol = cfg.keyCol;
+
+  let html = '<div class="diff-wrap"><table class="diff-table"><tbody>';
+  rows.forEach((row, ri) => {
+    const isHeaderRow = ri === headerIdx;
+    html += '<tr>';
+    for (let ci = 0; ci < maxCols; ci++) {
+      const v = esc(String(row[ci] ?? ''));
+      const isKeyCol = ci === keyCol;
+      if (isHeaderRow) {
+        html += `<th${isKeyCol ? ' style="background:#fef9c3;color:#854d0e;"' : ''}>${v}</th>`;
+      } else {
+        html += isKeyCol
+          ? `<td style="background:#fef9c3;font-weight:600;">${v}</td>`
+          : `<td>${v}</td>`;
+      }
+    }
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+
+  document.getElementById('result').innerHTML = html;
+  populateCfgUI(rows);
+}
+
+// ── Config UI ──────────────────────────────────────────────────────────────
+function populateCfgUI(rows) {
+  const configDiv = document.getElementById('diff-config');
+  if (!configDiv) return;
+
+  // Header row: 1-based for UI, 0-based internally
+  const autoHeader0 = findHeaderRow(rows); // 0-based
+  const headerInput = document.getElementById('cfg-header-row');
+  headerInput.placeholder = `自动(${autoHeader0 + 1})`;
+
+  const headerRowIdx = cfg.headerRow !== null ? cfg.headerRow : autoHeader0;
+  const headerRow = rows[headerRowIdx] || [];
+  const sel = document.getElementById('cfg-key-col');
+  sel.innerHTML = headerRow.map((h, i) => {
+    const label = String(h ?? '').trim()
+      ? `第${i + 1}列: ${String(h).slice(0, 25)}`
+      : `第${i + 1}列（空）`;
+    return `<option value="${i}"${i === cfg.keyCol ? ' selected' : ''}>${label}</option>`;
+  }).join('');
+
+  // Data range placeholders
+  const autoDataStart0 = headerRowIdx + 1; // 0-based
+  document.getElementById('cfg-data-start').placeholder = `自动(${autoDataStart0 + 1})`;
+  document.getElementById('cfg-data-end').placeholder = `自动(${rows.length})`;
+
+  configDiv.style.display = 'flex';
+}
+
+function onCfgChange() {
+  const val = document.getElementById('cfg-header-row').value.trim();
+  // UI is 1-based, store 0-based internally
+  cfg.headerRow = val === '' ? null : parseInt(val) - 1;
+  if (wb.a) {
+    const rows = getSheetRows(wb.a, document.getElementById('sheets-a').value);
+    populateCfgUI(rows);
+  }
+}
+
+// Drag-and-drop on upload areas
+['a','b'].forEach(side => {
+  const area = document.getElementById(`drop-${side}`);
+  area.addEventListener('dragover', e => { e.preventDefault(); area.classList.add('drag'); });
+  area.addEventListener('dragleave', () => area.classList.remove('drag'));
+  area.addEventListener('drop', e => {
+    e.preventDefault(); area.classList.remove('drag');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    const dt = new DataTransfer(); dt.items.add(file);
+    const input = document.getElementById(`file-${side}`);
+    input.files = dt.files;
+    loadFile(side, input);
+  });
+});
+
+// ── Sheet data extraction ──────────────────────────────────────────────────
+function getSheetRows(workbook, sheetName) {
+  const ws = workbook.Sheets[sheetName];
+  if (!ws) return [];
+  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+}
+
+// ── Core diff logic ────────────────────────────────────────────────────────
+function diffSheets(rowsA, rowsB) {
+  if (!rowsA.length && !rowsB.length) return { headers: [], colsAdd: [], colsDel: [], rows: [] };
+
+  // Find header row: use configured value or auto-detect
+  const headerIdxA = cfg.headerRow !== null ? cfg.headerRow : findHeaderRow(rowsA);
+  const headerIdxB = cfg.headerRow !== null ? cfg.headerRow : findHeaderRow(rowsB);
+
+  const headersA = (rowsA[headerIdxA] || []).map(String);
+  const headersB = (rowsB[headerIdxB] || []).map(String);
+
+  // Column diff
+  const setA = new Set(headersA.filter(h => h.trim()));
+  const setB = new Set(headersB.filter(h => h.trim()));
+  const colsAdd = headersB.filter(h => h.trim() && !setA.has(h)); // in B not A
+  const colsDel = headersA.filter(h => h.trim() && !setB.has(h)); // in A not B
+  const colsCommon = headersA.filter(h => h.trim() && setB.has(h));
+
+  // Build column index maps
+  const colIdxA = {}; headersA.forEach((h, i) => { if(h.trim()) colIdxA[h] = i; });
+  const colIdxB = {}; headersB.forEach((h, i) => { if(h.trim()) colIdxB[h] = i; });
+
+  // Data rows: respect configured data start/end (1-based in UI → 0-based here)
+  const dataStartA = cfg.dataStart !== null ? cfg.dataStart - 1 : headerIdxA + 1;
+  const dataStartB = cfg.dataStart !== null ? cfg.dataStart - 1 : headerIdxB + 1;
+  const dataEndA   = cfg.dataEnd   !== null ? cfg.dataEnd       : rowsA.length;
+  const dataEndB   = cfg.dataEnd   !== null ? cfg.dataEnd       : rowsB.length;
+  const dataA = rowsA.slice(dataStartA, dataEndA).filter(r => r.some(c => String(c).trim()));
+  const dataB = rowsB.slice(dataStartB, dataEndB).filter(r => r.some(c => String(c).trim()));
+
+  // Row key column (configurable, default col 1 for report-style Excels)
+  const KEY_COL = cfg.keyCol;
+  const mapA = new Map(); // key → row
+  const mapB = new Map();
+  dataA.forEach(r => { const k = String(r[KEY_COL] ?? '').trim(); if(k) mapA.set(k, r); });
+  dataB.forEach(r => { const k = String(r[KEY_COL] ?? '').trim(); if(k) mapB.set(k, r); });
+
+  // Maintain B's row order for output
+  const orderedKeys = [];
+  const seenKeys = new Set();
+  // deleted rows first (A-only)
+  for (const k of mapA.keys()) { if (!mapB.has(k)) { orderedKeys.push(k); seenKeys.add(k); } }
+  // then B order (added + changed + same)
+  for (const k of mapB.keys()) { if (!seenKeys.has(k)) { orderedKeys.push(k); seenKeys.add(k); } }
+
+  const rows = [];
+  for (const key of orderedKeys) {
+    const rA = mapA.get(key);
+    const rB = mapB.get(key);
+    if (rA && !rB) {
+      rows.push({ type: 'del', key, rA, rB: null, cellDiffs: {} });
+    } else if (!rA && rB) {
+      rows.push({ type: 'add', key, rA: null, rB, cellDiffs: {} });
+    } else {
+      // both exist — compare common columns
+      const cellDiffs = {};
+      for (const col of colsCommon) {
+        const vA = String(rA[colIdxA[col]] ?? '').trim();
+        const vB = String(rB[colIdxB[col]] ?? '').trim();
+        if (vA !== vB) cellDiffs[col] = { old: vA, new: vB };
+      }
+      const type = Object.keys(cellDiffs).length > 0 ? 'mod' : 'same';
+      rows.push({ type, key, rA, rB, cellDiffs });
+    }
+  }
+
+  // Final header order: A headers first, then new B-only headers at end
+  const finalHeaders = [...headersA.filter(h => h.trim()), ...colsAdd];
+
+  return { headers: finalHeaders, headersA, headersB, colIdxA, colIdxB, colsAdd, colsDel, colsCommon, rows, headerIdxA, headerIdxB, mapA, mapB, dataA, dataB };
+}
+
+function findHeaderRow(rows) {
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const nonEmpty = rows[i].filter(c => String(c).trim()).length;
+    if (nonEmpty >= 2) return i;
+  }
+  return 0;
+}
+
+// ── Run compare ────────────────────────────────────────────────────────────
+function runCompare() {
+  const sheetA = document.getElementById('sheets-a').value;
+  const sheetB = document.getElementById('sheets-b').value;
+
+  const rowsA = getSheetRows(wb.a, sheetA);
+  const rowsB = getSheetRows(wb.b, sheetB);
+
+  const diff = diffSheets(rowsA, rowsB);
+  diff.rawA = rowsA;
+  diff.rawB = rowsB;
+  const sheetKey = `${sheetA} → ${sheetB}`;
+  diffResults = { [sheetKey]: diff };
+  activeSheet = sheetKey;
+
+  renderUI(diff, sheetKey);
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function renderUI(diff, sheetKey) {
+  const addN  = diff.rows.filter(r => r.type === 'add').length;
+  const delN  = diff.rows.filter(r => r.type === 'del').length;
+  const modN  = diff.rows.filter(r => r.type === 'mod').length;
+  const sameN = diff.rows.filter(r => r.type === 'same').length;
+  document.getElementById('s-add').textContent  = addN;
+  document.getElementById('s-del').textContent  = delN;
+  document.getElementById('s-mod').textContent  = modN;
+  document.getElementById('s-same').textContent = sameN;
+  document.getElementById('s-cadd').textContent = diff.colsAdd.length;
+  document.getElementById('s-cdel').textContent = diff.colsDel.length;
+  document.getElementById('summary').style.display = 'flex';
+  document.getElementById('filters').style.display = 'flex';
+  document.getElementById('sheet-tabs').style.display = 'none';
+
+  const { rawA, headerIdxA, headers, colIdxA, colIdxB, colsAdd, colsDel, colsCommon, mapA, mapB } = diff;
+
+  // ── Build B-only insertion map (same logic as exportExcel) ──
+  const bKeys = [...mapB.keys()];
+  const insertAfter = {};
+  for (const bKey of bKeys) {
+    if (mapA.has(bKey)) continue;
+    const bIdx = bKeys.indexOf(bKey);
+    let anchor = '__START__';
+    for (let i = bIdx - 1; i >= 0; i--) {
+      if (mapA.has(bKeys[i])) { anchor = bKeys[i]; break; }
+    }
+    if (!insertAfter[anchor]) insertAfter[anchor] = [];
+    insertAfter[anchor].push(mapB.get(bKey));
+  }
+
+  // ── Helper: render one <tr> ──
+  function renderRow(type, rA, rB, cellDiffs) {
+    const hidden = !activeFilters[type] ? ' hidden-row' : '';
+    let html = `<tr class="row-${type}${hidden}" data-type="${type}">`;
+    headers.forEach((col, ci) => {
+      const isColAdd = colsAdd.includes(col);
+      const isColDel = colsDel.includes(col);
+      const isKey = ci === keyColInHeaders;
+      let cellCls = [
+        isColAdd ? 'col-add-cell' : isColDel ? 'col-del-cell' : '',
+        isKey ? 'col-key' : ''
+      ].filter(Boolean).join(' ');
+      let content = '';
+      const hasDiff = cellDiffs && cellDiffs[col];
+
+      if (type === 'add') {
+        const val = rB && colIdxB[col] !== undefined ? String(rB[colIdxB[col]] ?? '') : '';
+        content = isKey ? `<span class="row-badge badge-add">新增</span>${esc(val)}` : esc(val);
+      } else if (type === 'del') {
+        const val = rA && colIdxA[col] !== undefined ? String(rA[colIdxA[col]] ?? '') : '';
+        content = isKey ? `<span class="row-badge badge-del">删除</span>${esc(val)}` : esc(val);
+      } else if (hasDiff) {
+        cellCls += ' cell-mod';
+        content = (isKey ? `<span class="row-badge badge-mod">修改</span>` : '')
+          + `<div class="cell-diff">
+               <span class="cell-old">${esc(cellDiffs[col].old) || '(空)'}</span>
+               <span class="cell-arrow">↓</span>
+               <span class="cell-new">${esc(cellDiffs[col].new) || '(空)'}</span>
+             </div>`;
+      } else {
+        const src = rB || rA;
+        const idx = colIdxB[col] !== undefined ? colIdxB[col] : colIdxA[col];
+        content = esc(src && idx !== undefined ? String(src[idx] ?? '') : '');
+      }
+      if (isKey) {
+        html += `<th class="${cellCls.trim()}">${content}</th>`;
+      } else {
+        html += `<td class="${cellCls.trim()}">${content}</td>`;
+      }
+    });
+    html += '</tr>';
+    return html;
+  }
+
+  // ── Legend + column pills ──
+  let html = `<div class="legend">
+    <div class="legend-item"><div class="legend-color" style="background:var(--add)"></div>新增行</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--del)"></div>删除行</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--mod)"></div>修改单元格</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--col-add);border:1px solid var(--col-add-b)"></div>新增列</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--col-del);border:1px solid var(--col-del-b)"></div>删除列</div>
+  </div>`;
+  if (colsAdd.length || colsDel.length) {
+    html += `<div class="col-diff-bar">`;
+    colsAdd.forEach(c => html += `<span class="col-pill add">＋列 ${c}</span>`);
+    colsDel.forEach(c => html += `<span class="col-pill del">－列 ${c}</span>`);
+    html += `</div>`;
+  }
+
+  // ── Table ──
+  html += `<div class="diff-wrap"><table class="diff-table">`;
+
+  // Pre-header rows from A (e.g. title rows before the real header)
+  // Also include rows between header and data start (multi-level headers etc.)
+  const dataStartA_ui = cfg.dataStart !== null ? cfg.dataStart - 1 : headerIdxA + 1;
+  if (headerIdxA > 0 || dataStartA_ui > headerIdxA + 1) {
+    html += '<tbody>';
+    // rows before header row
+    for (let i = 0; i < headerIdxA; i++) {
+      const row = rawA[i] || [];
+      html += '<tr>';
+      headers.forEach((_, ci) => html += `<td>${esc(String(row[ci] ?? ''))}</td>`);
+      html += '</tr>';
+    }
+    // rows between header row and data start (e.g. merged sub-header rows)
+    for (let i = headerIdxA + 1; i < dataStartA_ui; i++) {
+      const row = rawA[i] || [];
+      html += '<tr>';
+      headers.forEach((_, ci) => html += `<td>${esc(String(row[ci] ?? ''))}</td>`);
+      html += '</tr>';
+    }
+    html += '</tbody>';
+  }
+
+  // Map raw cfg.keyCol → position in filtered headers array
+  const headersA = diff.headersA;
+  let keyColInHeaders = 0; // fallback to first column
+  let hPos = 0;
+  for (let i = 0; i < headersA.length; i++) {
+    if (headersA[i].trim()) {
+      if (i === cfg.keyCol) { keyColInHeaders = hPos; break; }
+      hPos++;
+    }
+  }
+
+  // Header row
+  html += '<thead><tr>';
+  headers.forEach((h, ci) => {
+    const isAdd = colsAdd.includes(h);
+    const isDel = colsDel.includes(h);
+    const isKey = ci === keyColInHeaders;
+    let cls = [isAdd ? 'col-add' : isDel ? 'col-del' : '', isKey ? 'col-key' : ''].filter(Boolean).join(' ');
+    cls = cls ? ` class="${cls}"` : '';
+    html += `<th${cls}>${esc(h)}${isAdd ? ' ＋' : isDel ? ' ✕' : ''}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  // B-only rows before any A data row
+  (insertAfter['__START__'] || []).forEach(rB => { html += renderRow('add', null, rB, null); });
+
+  // A's data rows in order, interleaved with B additions
+  const dataStartA = cfg.dataStart !== null ? cfg.dataStart - 1 : headerIdxA + 1;
+  const dataEndA   = cfg.dataEnd   !== null ? cfg.dataEnd       : rawA.length;
+  const dataA = rawA.slice(dataStartA, dataEndA).filter(r => r.some(c => String(c).trim()));
+  for (const rA of dataA) {
+    const key = String(rA[cfg.keyCol] ?? '').trim();
+    if (!key) continue;
+
+    if (!mapB.has(key)) {
+      html += renderRow('del', rA, null, null);
+    } else {
+      const rB = mapB.get(key);
+      const cellDiffs = {};
+      for (const col of colsCommon) {
+        const vA = String(rA[colIdxA[col]] ?? '').trim();
+        const vB = String(rB[colIdxB[col]] ?? '').trim();
+        if (vA !== vB) cellDiffs[col] = { old: vA, new: vB };
+      }
+      const type = Object.keys(cellDiffs).length > 0 ? 'mod' : 'same';
+      html += renderRow(type, rA, rB, cellDiffs);
+    }
+
+    (insertAfter[key] || []).forEach(rB => { html += renderRow('add', null, rB, null); });
+  }
+
+  html += '</tbody></table></div>';
+
+  if (addN + delN + modN + colsAdd.length + colsDel.length === 0) {
+    html += '<div class="no-diff">✅ 行与列结构完全相同，无任何差异。</div>';
+  }
+
+  document.getElementById('result').innerHTML = html;
+}
+
+// ── Filters ────────────────────────────────────────────────────────────────
+function toggleFilter(type, btn) {
+  activeFilters[type] = !activeFilters[type];
+  btn.classList.toggle('active', activeFilters[type]);
+  document.querySelectorAll(`tr[data-type="${type}"]`).forEach(tr => {
+    tr.classList.toggle('hidden-row', !activeFilters[type]);
+  });
+}
+
+function toggleSame(show) {
+  activeFilters.same = show;
+  document.querySelectorAll('tr[data-type="same"]').forEach(tr => {
+    tr.classList.toggle('hidden-row', !show);
+  });
+}
+
+// ── Export Excel ───────────────────────────────────────────────────────────
+function exportExcel() {
+  const sheetKey = activeSheet;
+  const diff = diffResults[sheetKey];
+  if (!diff || !diff.rawA) { alert('请先执行对比'); return; }
+
+  const { rawA, headerIdxA, colIdxA, colIdxB, colsAdd, colsDel, colsCommon, mapA, mapB } = diff;
+  const keyCol = cfg.keyCol;
+
+  // Rebuild insertAfter map
+  const bKeys = [...mapB.keys()];
+  const insertAfter = {};
+  for (const bKey of bKeys) {
+    if (mapA.has(bKey)) continue;
+    const bIdx = bKeys.indexOf(bKey);
+    let anchor = '__START__';
+    for (let i = bIdx - 1; i >= 0; i--) {
+      if (mapA.has(bKeys[i])) { anchor = bKeys[i]; break; }
+    }
+    if (!insertAfter[anchor]) insertAfter[anchor] = [];
+    insertAfter[anchor].push(mapB.get(bKey));
+  }
+
+  // Colors (Excel ARGB without alpha prefix for xlsx-js-style)
+  const CLR = { add: 'C6EFCE', del: 'FFC7CE', mod: 'FFEB9C' };
+
+  function makeCell(v, bgRgb) {
+    const obj = { v: v == null ? '' : String(v), t: 's' };
+    if (bgRgb) obj.s = { fill: { fgColor: { rgb: bgRgb } } };
+    return obj;
+  }
+
+  const ws = {};
+  let ri = 0; // Excel row index
+  const colWidths = [];
+
+  function writeRow(rowArr, bgRgb, cellColors) {
+    // cellColors: array of rgb string or null per column
+    rowArr.forEach((cell, ci) => {
+      const addr = XLSX.utils.encode_cell({ r: ri, c: ci });
+      const bg = (cellColors && cellColors[ci]) || bgRgb || null;
+      ws[addr] = makeCell(cell, bg);
+      const len = String(cell ?? '').length;
+      colWidths[ci] = Math.min(50, Math.max(colWidths[ci] || 8, len + 2));
+    });
+    ri++;
+  }
+
+  // Pre-header + sub-header rows from A — unchanged
+  const dataStartA = cfg.dataStart !== null ? cfg.dataStart - 1 : headerIdxA + 1;
+  const dataEndA   = cfg.dataEnd   !== null ? cfg.dataEnd       : rawA.length;
+  for (let i = 0; i < dataStartA; i++) {
+    writeRow(rawA[i] || [], null, null);
+  }
+
+  // B-only rows at START (green)
+  (insertAfter['__START__'] || []).forEach(rB => {
+    writeRow(Array.isArray(rB) ? rB : [], CLR.add, null);
+  });
+
+  // A data rows
+  const dataA = rawA.slice(dataStartA, dataEndA).filter(r => r.some(c => String(c).trim()));
+  for (const rA of dataA) {
+    const key = String(rA[keyCol] ?? '').trim();
+    if (!key) { writeRow(rA, null, null); continue; }
+
+    if (!mapB.has(key)) {
+      // Deleted row — red
+      writeRow(rA, CLR.del, null);
+    } else {
+      const rB = mapB.get(key);
+      // Compute cell diffs
+      const cellColors = rA.map(() => null);
+      let hasDiff = false;
+      for (const col of colsCommon) {
+        const vA = String(rA[colIdxA[col]] ?? '').trim();
+        const vB = String(rB[colIdxB[col]] ?? '').trim();
+        if (vA !== vB) {
+          if (colIdxA[col] !== undefined) cellColors[colIdxA[col]] = CLR.mod;
+          hasDiff = true;
+        }
+      }
+      writeRow(rA, null, hasDiff ? cellColors : null);
+    }
+
+    // B additions after this A row (green)
+    (insertAfter[key] || []).forEach(rB => {
+      writeRow(Array.isArray(rB) ? rB : [], CLR.add, null);
+    });
+  }
+
+  const maxCols = colWidths.length;
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: ri - 1, c: maxCols - 1 } });
+  ws['!cols'] = colWidths.map(w => ({ wch: w }));
+
+  const wb_out = XLSX.utils.book_new();
+  const safeName = document.getElementById('sheets-a').value.slice(0, 31);
+  XLSX.utils.book_append_sheet(wb_out, ws, safeName);
+  XLSX.writeFile(wb_out, `diff_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
